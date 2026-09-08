@@ -85,7 +85,7 @@ The system could generate several possible routes.
 
 ```text
 Erfurt
-   ↓ ✈️
+   ↓ 
 Mallorca
 
 Price: €145
@@ -96,9 +96,9 @@ Travel time: 2h 55min
 
 ```text
 Erfurt
-   ↓ 🚗
+   ↓ 
 Nürnberg
-   ↓ ✈️
+   ↓ 
 Mallorca
 
 Price: €80
@@ -109,9 +109,9 @@ Travel time: 6h
 
 ```text
 Erfurt
-   ↓ 🚆
+   ↓ 
 Frankfurt
-   ↓ ✈️
+   ↓ 
 Mallorca
 
 Price: €110
