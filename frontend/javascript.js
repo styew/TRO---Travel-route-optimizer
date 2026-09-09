@@ -1,21 +1,29 @@
 const searchButton = document.getElementById("search_button");
 
-searchButton.addEventListener("click", async () => {
-
-    console.log("1 - botão clicado");
-
-    const origin = document.getElementById("origin").value;
-
-    console.log("2 - origin:", origin);
+async function geocode(city) {
 
     const response = await fetch(
-        `http://localhost:8000/geocode?city=${encodeURIComponent(origin)}`
+        `http://localhost:8000/geocode?city=${encodeURIComponent(city)}`
     );
-
-    console.log("3 - response:", response);
-    console.log("4 - status:", response.status);
 
     const data = await response.json();
 
-    console.log("5 - data:", data);
+    return data;
+}
+
+
+searchButton.addEventListener("click", async () => {
+
+
+    const origin = document.getElementById("origin").value;
+    const destination = document.getElementById("destination").value;
+
+    console.log("origin:", origin, ", destination:", destination);
+
+    const originData = await geocode(origin);
+    const destinationData = await geocode(destination);
+
+    console.log("Origin data:", originData);
+    console.log("Destination data:", destinationData);
+
 });
