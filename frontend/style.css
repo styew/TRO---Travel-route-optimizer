@@ -1,0 +1,105 @@
+```css
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: Arial, sans-serif;
+    background: #f4f6f8;
+    color: #222;
+}
+
+header {
+    text-align: center;
+    padding: 40px 20px 25px;
+}
+
+header h1 {
+    font-size: 2.5rem;
+    margin-bottom: 5px;
+}
+
+header p {
+    color: #666;
+}
+
+main {
+    max-width: 800px;
+    margin: 20px auto;
+    padding: 0 20px;
+}
+
+#input_info {
+    background: white;
+    padding: 30px;
+    border-radius: 12px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.08);
+}
+
+#input_info h2 {
+    margin-bottom: 25px;
+    font-size: 1.4rem;
+}
+
+.input_group {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 15px;
+}
+
+.input_field {
+    display: flex;
+    flex-direction: column;
+}
+
+.input_field label {
+    margin-bottom: 7px;
+    font-size: 0.9rem;
+    font-weight: bold;
+}
+
+.input_field input {
+    padding: 12px;
+    border: 1px solid #ccc;
+    border-radius: 7px;
+    font-size: 1rem;
+    outline: none;
+}
+
+.input_field input:focus {
+    border-color: #555;
+}
+
+#search_button {
+    margin-top: 25px;
+    width: 100%;
+    padding: 13px;
+    border: none;
+    border-radius: 7px;
+    background: #222;
+    color: white;
+    font-size: 1rem;
+    cursor: pointer;
+}
+
+#search_button:hover {
+    background: #444;
+}
+
+#output {
+    margin-top: 25px;
+}
+
+@media (max-width: 650px) {
+
+    .input_group {
+        grid-template-columns: 1fr;
+    }
+
+    #input_info {
+        padding: 20px;
+    }
+}
+```
