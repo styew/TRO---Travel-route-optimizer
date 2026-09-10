@@ -1,29 +1,29 @@
 const searchButton = document.getElementById("search_button");
 
-async function geocode(city) {
+searchButton.addEventListener("click", async () => {
+
+    const origin = document.getElementById("origin").value;
+    const destination = document.getElementById("destination").value;
+    const date = document.getElementById("date").value;
+
+    console.log("Sending search to backend...");
 
     const response = await fetch(
-        `http://localhost:8000/geocode?city=${encodeURIComponent(city)}`
+        "http://localhost:8000/search",
+        {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                origin: origin,
+                destination: destination,
+                date: date
+            })
+        }
     );
 
     const data = await response.json();
 
-    return data;
-}
-
-
-searchButton.addEventListener("click", async () => {
-
-
-    const origin = document.getElementById("origin").value;
-    const destination = document.getElementById("destination").value;
-
-    console.log("origin:", origin, ", destination:", destination);
-
-    const originData = await geocode(origin);
-    const destinationData = await geocode(destination);
-
-    console.log("Origin data:", originData);
-    console.log("Destination data:", destinationData);
-
+    console.log("Backend response:", data);
 });
