@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import httpx
+from pydantic import BaseModel
+
+from backend.services.geocoding import geocode
 
 app = FastAPI()
 
@@ -12,47 +14,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# endpoints...
+
+class SearchRequest(BaseModel):
+    origin: str
+    destination: str
+    date: str
+
 
 @app.get("/")
 def root():
     return {"message": "TRO API is running"}
 
 
-@app.get("/geocode")
-async def geocode(city: str):
+@app.post("/search")
+async def search(request: SearchRequest):
 
-    url = "https://nominatim.openstreetmap.org/search"
+    print("Origin:", request.origin)
+    print("Destination:", request.destination)
+    print("Date:", request.date)
 
-    params = {
-        "q": city,
-        "format": "jsonv2",
-        "limit": 1
-    }
+    origin_data = await geocode(request.origin)
+    destination_data = await geocode(request.destination)
 
-    headers = {
-        "User-Agent": "TRO-Travel-Route-Optimizer"
-    }
-
-    async with httpx.AsyncClient() as client:
-
-        response = await client.get(
-            url,
-            params=params,
-            headers=headers
-        )
-
-    data = response.json()
-
-    if not data:
-        return {
-            "error": "City not found"
-        }
-
-    result = data[0]
+    print("return after geo def:", origin_data,destination_data)
 
     return {
-        "name": result["display_name"],
-        "latitude": float(result["lat"]),
-        "longitude": float(result["lon"])
+        "origin": origin_data,
+        "destination": destination_data
     }
