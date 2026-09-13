@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from backend.services.geocoding import geocode
+from backend.services.infra import discover_infrastructure
 
 app = FastAPI()
 
@@ -37,6 +38,13 @@ async def search(request: SearchRequest):
     destination_data = await geocode(request.destination)
 
     print("return after geo def:", origin_data,destination_data)
+
+    origin_infra = await discover_infrastructure(
+        origin_data['latitude'],
+        origin_data['longitude']
+    )
+
+    print('valor recebdio do infra: ', origin_infra)
 
     return {
         "origin": origin_data,
