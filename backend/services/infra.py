@@ -81,24 +81,56 @@ async def discover_train_stations(latitude: float, longitude: float) -> list[dic
 
 def select_city_train_station(stations: list[dict[str, Any]], city_name: str) -> list[dict[str, Any]]:
     """Return the city's Hbf, otherwise its exact-name station, otherwise none."""
+    selection = explain_train_station_filter(stations, city_name)
+    return selection["selected"]
+
+
+def explain_train_station_filter(
+    stations: list[dict[str, Any]], city_name: str
+) -> dict[str, Any]:
+    """Expose the station-filter decision for development and manual verification."""
     normalized_city = _normalize_text(city_name)
     if not normalized_city:
-        return []
+        return {"rule_applied": "no_city_name", "selected": [], "candidates": []}
     city_words = normalized_city.split()
     hbf_stations = []
     exact_name_stations = []
+    candidates = []
     for station in stations:
         normalized_name = _normalize_text(station["name"])
         name_words = normalized_name.split()
-        if all(word in name_words for word in city_words) and ("hbf" in name_words or "hauptbahnhof" in name_words):
+        is_city_hbf = all(word in name_words for word in city_words) and (
+            "hbf" in name_words or "hauptbahnhof" in name_words
+        )
+        is_exact_city_name = normalized_name == normalized_city
+        if is_city_hbf:
             hbf_stations.append(station)
-        elif normalized_name == normalized_city:
+            match_type = "city_hbf"
+        elif is_exact_city_name:
             exact_name_stations.append(station)
+            match_type = "city_exact_name"
+        else:
+            match_type = "not_eligible"
+        candidates.append({
+            "id": station["id"],
+            "name": station["name"],
+            "distance_km": station["distance_km"],
+            "match_type": match_type,
+        })
     if hbf_stations:
-        return [min(hbf_stations, key=lambda item: item["distance_km"])]
-    if exact_name_stations:
-        return [min(exact_name_stations, key=lambda item: item["distance_km"])]
-    return []
+        selected = [min(hbf_stations, key=lambda item: item["distance_km"])]
+        rule_applied = "city_hbf"
+    elif exact_name_stations:
+        selected = [min(exact_name_stations, key=lambda item: item["distance_km"])]
+        rule_applied = "city_exact_name"
+    else:
+        selected = []
+        rule_applied = "no_city_station_found"
+
+    selected_ids = {station["id"] for station in selected}
+    for candidate in candidates:
+        candidate["selected"] = candidate["id"] in selected_ids
+    return {"rule_applied": rule_applied, "selected": selected, "candidates": candidates}
 
 
 async def discover_airports(latitude: float, longitude: float) -> list[dict[str, Any]]:
@@ -107,5 +139,57 @@ async def discover_airports(latitude: float, longitude: float) -> list[dict[str,
      way["aeroway"="aerodrome"](around:{AIRPORT_RADIUS_METERS},{latitude},{longitude});
      relation["aeroway"="aerodrome"](around:{AIRPORT_RADIUS_METERS},{latitude},{longitude}););
     out center tags;'''
-    airports = _normalize_elements(await _query_overpass(query), latitude, longitude, "airport")
-    return [airport for airport in airports if airport["iata"] or airport["scheduled_service"] == "yes" or airport["passenger"] == "yes"]
+    return _normalize_elements(await _query_overpass(query), latitude, longitude, "airport")
+
+
+def _airport_has_passenger_service(airport: dict[str, Any]) -> bool:
+    """Check whether an airport has an OpenStreetMap signal of passenger service."""
+    return bool(
+        airport["iata"]
+        or airport["scheduled_service"] == "yes"
+        or airport["passenger"] == "yes"
+    )
+
+
+def _airport_matches_city(airport: dict[str, Any], city_name: str) -> bool:
+    """Check whether every normalized city word appears in the airport name."""
+    city_words = _normalize_text(city_name).split()
+    airport_words = _normalize_text(airport["name"]).split()
+    return bool(city_words) and all(word in airport_words for word in city_words)
+
+
+def select_city_airports(
+    airports: list[dict[str, Any]], city_name: str
+) -> list[dict[str, Any]]:
+    """Keep commercial airports whose names identify them as airports of this city."""
+    return [
+        airport
+        for airport in airports
+        if _airport_has_passenger_service(airport)
+        and _airport_matches_city(airport, city_name)
+    ]
+
+
+def explain_airport_filter(
+    airports: list[dict[str, Any]], city_name: str
+) -> list[dict[str, Any]]:
+    """Expose airport eligibility decisions for development and manual verification."""
+    candidates = []
+    for airport in airports:
+        reasons = []
+        if airport["iata"]:
+            reasons.append("iata_code")
+        if airport["scheduled_service"] == "yes":
+            reasons.append("scheduled_service")
+        if airport["passenger"] == "yes":
+            reasons.append("passenger_service")
+        matches_city = _airport_matches_city(airport, city_name)
+        candidates.append({
+            "id": airport["id"],
+            "name": airport["name"],
+            "distance_km": airport["distance_km"],
+            "matches_city": matches_city,
+            "accepted": bool(reasons) and matches_city,
+            "acceptance_reasons": reasons,
+        })
+    return candidates

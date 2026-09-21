@@ -48,5 +48,6 @@ async def geocode(city: str):
         "city_name": city_name,
         "latitude": float(result["lat"]),
         "longitude": float(result["lon"]),
+        "source_id": f"nominatim:{result['osm_type']}:{result['osm_id']}",
         "source": "nominatim",
     }
