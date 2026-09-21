@@ -8,20 +8,21 @@ async def geocode(city: str):
     params = {
         "q": city,
         "format": "jsonv2",
-        "limit": 1
+        "limit": 1,
+        "addressdetails": 1,
     }
 
     headers = {
         "User-Agent": "TRO-Travel-Route-Optimizer"
     }
 
-    async with httpx.AsyncClient() as client:
-
+    async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.get(
             url,
             params=params,
             headers=headers
         )
+        response.raise_for_status()
 
     data = response.json()
 
@@ -32,8 +33,21 @@ async def geocode(city: str):
 
     result = data[0]
 
+    address = result.get("address", {})
+    city_name = next(
+        (
+            address[key]
+            for key in ("city", "town", "village", "municipality")
+            if address.get(key)
+        ),
+        result.get("name", city),
+    )
+
     return {
         "name": result["display_name"],
+        "city_name": city_name,
         "latitude": float(result["lat"]),
-        "longitude": float(result["lon"])
+        "longitude": float(result["lon"]),
+        "source_id": f"nominatim:{result['osm_type']}:{result['osm_id']}",
+        "source": "nominatim",
     }
