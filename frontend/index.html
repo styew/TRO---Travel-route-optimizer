@@ -64,12 +64,20 @@
 
         <section id="output">
 
-            <!-- Results will appear here later -->
+            <p class="empty_state">Search for a route to build its transport graph.</p>
 
+        </section>
+
+        <section id="graph_section" class="hidden">
+            <div class="section_heading"><h2>3D graph</h2><button id="reset_graph_button" type="button">Reset view</button></div>
+            <p>Drag to rotate, scroll to zoom. Nodes use geographic coordinates and lines show available connections.</p>
+            <div id="graph_canvas"></div>
         </section>
 
     </main>
 
+    <script src="https://unpkg.com/three@0.124.0/build/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.124.0/examples/js/controls/OrbitControls.js"></script>
     <script src="javascript.js"></script>
 
 </body>

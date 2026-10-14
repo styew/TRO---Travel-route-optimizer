@@ -6,6 +6,7 @@ from backend.models.node import TransportNode
 def create_city_transport_nodes(
     city: dict,
     infrastructure: dict,
+    graph_side: str,
 ) -> list[TransportNode]:
     """Create the long-distance city, rail, and airport nodes for one city."""
     nodes = [
@@ -18,7 +19,10 @@ def create_city_transport_nodes(
             supported_modes=["car"],
             source=city["source"],
             source_id=city["source_id"],
-            metadata={"display_name": city["name"]},
+            metadata={
+                "display_name": city["name"],
+                "graph_role": f"{graph_side}_anchor",
+            },
         )
     ]
 
@@ -35,6 +39,7 @@ def create_city_transport_nodes(
                 source_id=station["id"],
                 metadata={
                     "distance_from_city_center_km": station["distance_km"],
+                    "graph_role": f"{graph_side}_local_terminal",
                 },
             )
         )
@@ -54,6 +59,7 @@ def create_city_transport_nodes(
                     "distance_from_city_center_km": airport["distance_km"],
                     "iata": airport["iata"],
                     "icao": airport["icao"],
+                    "graph_role": f"{graph_side}_local_terminal",
                 },
             )
         )

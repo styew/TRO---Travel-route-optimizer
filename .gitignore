@@ -54,3 +54,6 @@ dist/
 # =========================
 
 *.log
+
+# Local database
+*.db

@@ -21,6 +21,7 @@ OVERPASS_URLS = (
 )
 TRAIN_RADIUS_METERS = 20_000
 AIRPORT_RADIUS_METERS = 50_000
+GATEWAY_TRAIN_RADIUS_METERS = 100_000
 OVERPASS_MIN_REQUEST_INTERVAL_SECONDS = 1.0
 OVERPASS_MAX_RETRIES = 3
 OVERPASS_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -152,6 +153,20 @@ async def discover_train_stations(latitude: float, longitude: float) -> list[dic
      relation["railway"="station"](around:{TRAIN_RADIUS_METERS},{latitude},{longitude}););
     out center tags;'''
     return _normalize_elements(await _query_overpass(query), latitude, longitude, "train_station")
+
+
+async def discover_gateway_train_stations(
+    latitude: float, longitude: float
+) -> list[dict[str, Any]]:
+    """Find nearby Hauptbahnhof-style stations for car access when a city has none."""
+    query = f'''[out:json][timeout:25];
+    (node["railway"="station"]["name"~"Hbf|Hauptbahnhof",i](around:{GATEWAY_TRAIN_RADIUS_METERS},{latitude},{longitude});
+     way["railway"="station"]["name"~"Hbf|Hauptbahnhof",i](around:{GATEWAY_TRAIN_RADIUS_METERS},{latitude},{longitude});
+     relation["railway"="station"]["name"~"Hbf|Hauptbahnhof",i](around:{GATEWAY_TRAIN_RADIUS_METERS},{latitude},{longitude}););
+    out center tags;'''
+    return _normalize_elements(
+        await _query_overpass(query), latitude, longitude, "train_station"
+    )
 
 
 def select_city_train_station(stations: list[dict[str, Any]], city_name: str) -> list[dict[str, Any]]:

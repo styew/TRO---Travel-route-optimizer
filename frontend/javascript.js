@@ -1,29 +1,85 @@
+"use strict";
+
 const searchButton = document.getElementById("search_button");
+const output = document.getElementById("output");
+const graphSection = document.getElementById("graph_section");
+const graphCanvas = document.getElementById("graph_canvas");
+let graphRenderer;
+let latestGraph;
 
+/** Show search feedback without inserting untrusted API text as HTML. */
+function showMessage(message, isError = false) {
+    output.textContent = message;
+    output.className = isError ? "error_state" : "result_card";
+}
+
+/** Render the serializable backend graph as an interactive geographic 3D scene. */
+function renderGraph(graph) {
+    if (!window.THREE || !window.THREE.OrbitControls) {
+        graphCanvas.textContent = "The 3D library could not be loaded. Refresh with an internet connection.";
+        return;
+    }
+    graphRenderer?.dispose();
+    graphCanvas.replaceChildren();
+    const width = graphCanvas.clientWidth;
+    const height = 520;
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x07111f);
+    const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 2000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(width, height);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    graphCanvas.appendChild(renderer.domElement);
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    const latitudes = graph.nodes.map((node) => node.latitude);
+    const longitudes = graph.nodes.map((node) => node.longitude);
+    const centerLat = (Math.min(...latitudes) + Math.max(...latitudes)) / 2;
+    const centerLon = (Math.min(...longitudes) + Math.max(...longitudes)) / 2;
+    const positions = new Map();
+    const colors = { city_center: 0x4cc9f0, train_station: 0xf9c74f, airport: 0xf72585 };
+    graph.nodes.forEach((node) => {
+        const position = new THREE.Vector3((node.longitude - centerLon) * 18, node.type === "airport" ? 2 : 1, (node.latitude - centerLat) * -18);
+        positions.set(node.id, position);
+        const sphere = new THREE.Mesh(new THREE.SphereGeometry(node.type === "city_center" ? 0.44 : 0.32, 20, 20), new THREE.MeshStandardMaterial({ color: colors[node.type] }));
+        sphere.position.copy(position);
+        scene.add(sphere);
+    });
+    graph.edges.forEach((edge) => {
+        const from = positions.get(edge.origin_node_id);
+        const to = positions.get(edge.destination_node_id);
+        if (from && to) scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([from, to]), new THREE.LineBasicMaterial({ color: 0x7dd3fc })));
+    });
+    scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+    scene.add(new THREE.GridHelper(50, 20, 0x1d4ed8, 0x1e293b));
+    const resetCamera = () => { camera.position.set(0, 14, 18); controls.target.set(0, 0, 0); controls.update(); };
+    resetCamera();
+    const animate = () => { controls.update(); renderer.render(scene, camera); renderer.userData.frame = requestAnimationFrame(animate); };
+    animate();
+    graphRenderer = { resetCamera, dispose: () => { cancelAnimationFrame(renderer.userData.frame); controls.dispose(); renderer.dispose(); } };
+}
+
+/** Fetch a route graph and unlock the visual graph button after success. */
 searchButton.addEventListener("click", async () => {
-
-    const origin = document.getElementById("origin").value;
-    const destination = document.getElementById("destination").value;
+    const origin = document.getElementById("origin").value.trim();
+    const destination = document.getElementById("destination").value.trim();
     const date = document.getElementById("date").value;
-
-    console.log("Sending search to backend...");
-
-    const response = await fetch(
-        "http://localhost:8000/search",
-        {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                origin: origin,
-                destination: destination,
-                date: date
-            })
-        }
-    );
-
-    const data = await response.json();
-
-    console.log("Backend response:", data);
+    if (!origin || !destination || !date) return showMessage("Enter origin, destination, and date before searching.", true);
+    searchButton.disabled = true;
+    searchButton.textContent = "Building graph…";
+    try {
+        const response = await fetch("http://localhost:8000/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ origin, destination, date }) });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "The graph could not be created.");
+        output.innerHTML = `<div class="result_card"><h2>${data.origin.city_name} → ${data.destination.city_name}</h2><p>${data.graph.nodes.length} nodes and ${data.graph.edges.length} available car edges.</p><button id="view_graph_button" type="button">View 3D graph</button></div>`;
+        latestGraph = data.graph;
+        document.getElementById("view_graph_button").addEventListener("click", () => {
+            graphSection.classList.remove("hidden");
+            requestAnimationFrame(() => renderGraph(latestGraph));
+            graphSection.scrollIntoView({ behavior: "smooth" });
+        });
+    } catch (error) { showMessage(error.message, true); }
+    finally { searchButton.disabled = false; searchButton.textContent = "Search routes"; }
 });
+
+document.getElementById("reset_graph_button").addEventListener("click", () => graphRenderer?.resetCamera());
