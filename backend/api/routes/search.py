@@ -20,6 +20,7 @@ from backend.services.infra import (
     select_city_airports,
 )
 from backend.services.node_factory import create_city_transport_nodes
+from backend.services.route_planner import find_lowest_price_routes
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Graph discovery"])
@@ -61,7 +62,7 @@ async def get_city_infrastructure(city: dict, debug: bool) -> tuple[dict, bool, 
     summary="Discover initial graph nodes and estimated car edges",
     description="""Geocodes origin and destination, loads or discovers city infrastructure, and assembles a serializable graph.
 
-The graph always contains an estimated direct-car edge between city centers. When the origin has no local eligible train station, it may contain estimated car-access edges to nearby main-station gateways. Train and flight connection edges will be added only after their timetable providers are integrated. Car values are transparent estimates, not live routing results.""",
+The graph always contains an estimated direct-car edge between city centers. When the origin has no local eligible train station, it may contain estimated car-access edges to nearby main-station gateways. The API also ranks up to ten complete, cycle-free paths by lowest estimated price, with an initial maximum of four segments. Train and flight connection edges will be added only after their timetable providers are integrated. Car values are transparent estimates, not live routing results.""",
     response_description="City data, selected infrastructure, nodes, estimated car edges, and cache status.",
     responses={404: {"description": "The origin or destination could not be geocoded as a city."}, 503: {"description": "A geocoding provider is temporarily unavailable or rate limited."}, 200: {"description": "Initial graph nodes and available estimated car edges were discovered."}},
 )
@@ -94,7 +95,8 @@ async def search(request: SearchRequest):
             graph_warnings.append({"city": origin_data["city_name"], "infrastructure_type": "gateway_train_stations", "message": "Nearby main stations could not be discovered; only the direct car edge is available."})
 
     graph = build_initial_route_graph(origin_nodes, destination_nodes, gateway_nodes)
-    response = {"origin": origin_data, "destination": destination_data, "origin_infrastructure": origin_infrastructure, "destination_infrastructure": destination_infrastructure, "origin_nodes": origin_nodes, "destination_nodes": destination_nodes, "graph": graph, "cache": {"origin_hit": origin_cache_hit, "destination_hit": destination_cache_hit}}
+    route_plan = find_lowest_price_routes(graph)
+    response = {"origin": origin_data, "destination": destination_data, "origin_infrastructure": origin_infrastructure, "destination_infrastructure": destination_infrastructure, "origin_nodes": origin_nodes, "destination_nodes": destination_nodes, "graph": graph, "route_plan": route_plan, "cache": {"origin_hit": origin_cache_hit, "destination_hit": destination_cache_hit}}
     warnings = origin_warnings + destination_warnings + graph_warnings
     if warnings:
         response["warnings"] = warnings
