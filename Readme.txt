@@ -18,7 +18,7 @@ The user will be able to optimize the search according to:
 * Shortest travel time
 * Best balance between price and travel time
 
-Whenever possible, the application will also provide a link to the corresponding flight or train connection so that the user can continue the booking process with the respective provider.
+Whenever possible, the application will provide booking links for the train or flight segments in a selected route. The user completes the purchase directly with the respective transportation provider.
 
 ---
 
@@ -59,6 +59,12 @@ The main goal is to find and compare efficient routes between two locations usin
 
 Germany will be the primary starting region, with destinations initially focused on Europe.
 
+### Booking Links
+
+Travel Route Optimizer is a route comparison and discovery tool. It does not sell tickets, process payments, issue tickets, or manage booking changes and cancellations.
+
+For a selected route, the application may show a booking link for each train or flight segment that can be purchased from an available provider. Booking links may be supplied by approved partners and will be identified transparently when applicable.
+
 ### Out of Scope
 
 The following features are not part of the initial version:
@@ -67,6 +73,9 @@ The following features are not part of the initial version:
 * Car rental
 * Restaurants
 * Tourism recommendations
+* Ticket payments
+* Ticket issuance
+* Booking changes, cancellations, or customer support for transportation providers
 
 Additional transportation methods and features may be introduced in future versions.
 
@@ -171,7 +180,11 @@ The system can combine different transportation modes within a single route.
 
 ### FR-09
 
-The system should provide a link to the corresponding transportation provider when available.
+The system should provide a booking link to the corresponding transportation provider for each bookable train or flight segment when available.
+
+### FR-10
+
+The system should clearly identify booking links that are provided through a commercial or partner relationship.
 
 ---
 
@@ -204,6 +217,7 @@ The application will rely on external data sources and APIs for information such
 * Fuel prices
 * Flight connections and prices
 * Train connections and prices
+* Booking links for available train and flight providers
 
 The exact providers will be evaluated during the initial research phase.
 
@@ -253,6 +267,8 @@ Actual prices and travel times may differ due to factors such as:
 * Traffic
 * Delays
 * Changes in transportation schedules
+
+The price, availability, booking conditions, and final itinerary are confirmed by the transportation provider at the time of purchase. Travel Route Optimizer only presents route comparisons and redirects the user to the relevant provider when a booking link is available.
 
 The availability and quality of external APIs will also influence which transportation options can be provided.
 

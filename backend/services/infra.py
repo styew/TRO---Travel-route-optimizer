@@ -2,16 +2,36 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import math
 import re
+import time
 import unicodedata
 from typing import Any
 
 import httpx
 
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+# Public instances occasionally time out independently. These endpoints use
+# different operators, so a retry can survive an outage of the main service.
+OVERPASS_URLS = (
+    "https://overpass.private.coffee/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://overpass-api.de/api/interpreter",
+)
 TRAIN_RADIUS_METERS = 20_000
 AIRPORT_RADIUS_METERS = 50_000
+OVERPASS_MIN_REQUEST_INTERVAL_SECONDS = 1.0
+OVERPASS_MAX_RETRIES = 3
+OVERPASS_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+_overpass_request_lock = asyncio.Lock()
+_last_overpass_request_at = 0.0
+logger = logging.getLogger(__name__)
+
+
+class InfrastructureProviderUnavailableError(RuntimeError):
+    """Raised when Overpass remains unavailable after controlled retry attempts."""
 
 
 def _normalize_text(value: str) -> str:
@@ -29,11 +49,66 @@ def _distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 async def _query_overpass(query: str) -> list[dict[str, Any]]:
+    """Query Overpass with pacing and fail over to another public instance on transient errors."""
+    global _last_overpass_request_at
+
     headers = {"User-Agent": "TRO-Travel-Route-Optimizer"}
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(OVERPASS_URL, data={"data": query}, headers=headers)
-        response.raise_for_status()
-    return response.json().get("elements", [])
+    async with _overpass_request_lock:
+        elapsed = time.monotonic() - _last_overpass_request_at
+        if elapsed < OVERPASS_MIN_REQUEST_INTERVAL_SECONDS:
+            await asyncio.sleep(OVERPASS_MIN_REQUEST_INTERVAL_SECONDS - elapsed)
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for attempt in range(OVERPASS_MAX_RETRIES):
+                endpoint = OVERPASS_URLS[attempt % len(OVERPASS_URLS)]
+                _last_overpass_request_at = time.monotonic()
+                try:
+                    response = await client.post(
+                        endpoint,
+                        data={"data": query},
+                        headers=headers,
+                    )
+                except httpx.RequestError as error:
+                    logger.warning(
+                        "Overpass request to %s failed on attempt %s of %s: %s",
+                        endpoint,
+                        attempt + 1,
+                        OVERPASS_MAX_RETRIES,
+                        error,
+                    )
+                    if attempt == OVERPASS_MAX_RETRIES - 1:
+                        raise InfrastructureProviderUnavailableError(
+                            "The infrastructure provider could not be reached."
+                        ) from error
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+
+                if response.status_code in OVERPASS_RETRYABLE_STATUS_CODES:
+                    logger.warning(
+                        "Overpass endpoint %s returned HTTP %s on attempt %s of %s.",
+                        endpoint,
+                        response.status_code,
+                        attempt + 1,
+                        OVERPASS_MAX_RETRIES,
+                    )
+                    if attempt == OVERPASS_MAX_RETRIES - 1:
+                        reason = (
+                            "temporarily rate limited"
+                            if response.status_code == 429
+                            else "temporarily unavailable or timed out"
+                        )
+                        raise InfrastructureProviderUnavailableError(
+                            f"The infrastructure provider is {reason}."
+                        )
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+
+                response.raise_for_status()
+                return response.json().get("elements", [])
+
+    raise InfrastructureProviderUnavailableError(
+        "The infrastructure provider did not return a usable response."
+    )
 
 
 def _element_coordinates(element: dict[str, Any]) -> tuple[float, float] | None:
@@ -71,7 +146,7 @@ def _normalize_elements(elements: list[dict[str, Any]], origin_latitude: float, 
 
 
 async def discover_train_stations(latitude: float, longitude: float) -> list[dict[str, Any]]:
-    query = f'''[out:json];
+    query = f'''[out:json][timeout:25];
     (node["railway"="station"](around:{TRAIN_RADIUS_METERS},{latitude},{longitude});
      way["railway"="station"](around:{TRAIN_RADIUS_METERS},{latitude},{longitude});
      relation["railway"="station"](around:{TRAIN_RADIUS_METERS},{latitude},{longitude}););
@@ -134,7 +209,7 @@ def explain_train_station_filter(
 
 
 async def discover_airports(latitude: float, longitude: float) -> list[dict[str, Any]]:
-    query = f'''[out:json];
+    query = f'''[out:json][timeout:25];
     (node["aeroway"="aerodrome"](around:{AIRPORT_RADIUS_METERS},{latitude},{longitude});
      way["aeroway"="aerodrome"](around:{AIRPORT_RADIUS_METERS},{latitude},{longitude});
      relation["aeroway"="aerodrome"](around:{AIRPORT_RADIUS_METERS},{latitude},{longitude}););
