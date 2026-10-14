@@ -13,6 +13,52 @@ function showMessage(message, isError = false) {
     output.className = isError ? "error_state" : "result_card";
 }
 
+/** Show the available graph connections, including every cached flight reference. */
+function showSearchResult(data) {
+    const flightEdges = data.graph.edges.filter((edge) => edge.edge_type === "flight_connection");
+    const card = document.createElement("div");
+    card.className = "result_card";
+    const title = document.createElement("h2");
+    title.textContent = `${data.origin.city_name} → ${data.destination.city_name}`;
+    const summary = document.createElement("p");
+    summary.textContent = `${data.graph.nodes.length} nodes and ${data.graph.edges.length} available connections.`;
+    card.append(title, summary);
+
+    const flightDetails = document.createElement("details");
+    flightDetails.className = "connection_details";
+    const flightSummary = document.createElement("summary");
+    flightSummary.textContent = flightEdges.length
+        ? `${flightEdges.length} cached flight reference(s) found`
+        : "No cached flight reference was found for this date";
+    flightDetails.appendChild(flightSummary);
+    if (flightEdges.length) {
+        const list = document.createElement("ul");
+        flightEdges.forEach((edge) => {
+            const item = document.createElement("li");
+            const flight = edge.metadata.flight_number || "Flight number unavailable";
+            item.textContent = `${edge.metadata.origin_iata} → ${edge.metadata.destination_iata} · ${flight} · €${edge.estimated_price_eur} cached reference price`;
+            list.appendChild(item);
+        });
+        flightDetails.appendChild(list);
+    } else {
+        const explanation = document.createElement("p");
+        explanation.textContent = "Travelpayouts may not have a cached price for every airport pair and date. Car connections are still shown in the graph.";
+        flightDetails.appendChild(explanation);
+    }
+    const graphButton = document.createElement("button");
+    graphButton.id = "view_graph_button";
+    graphButton.type = "button";
+    graphButton.textContent = "View 3D graph";
+    graphButton.addEventListener("click", () => {
+        graphSection.classList.remove("hidden");
+        requestAnimationFrame(() => renderGraph(latestGraph));
+        graphSection.scrollIntoView({ behavior: "smooth" });
+    });
+    card.append(flightDetails, graphButton);
+    output.replaceChildren(card);
+    output.className = "";
+}
+
 /** Render the serializable backend graph as an interactive geographic 3D scene. */
 function renderGraph(graph) {
     if (!window.THREE || !window.THREE.OrbitControls) {
@@ -48,7 +94,8 @@ function renderGraph(graph) {
     graph.edges.forEach((edge) => {
         const from = positions.get(edge.origin_node_id);
         const to = positions.get(edge.destination_node_id);
-        if (from && to) scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([from, to]), new THREE.LineBasicMaterial({ color: 0x7dd3fc })));
+        const edgeColor = edge.mode === "flight" ? 0xf72585 : 0x7dd3fc;
+        if (from && to) scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([from, to]), new THREE.LineBasicMaterial({ color: edgeColor })));
     });
     scene.add(new THREE.AmbientLight(0xffffff, 1.5));
     scene.add(new THREE.GridHelper(50, 20, 0x1d4ed8, 0x1e293b));
@@ -71,13 +118,8 @@ searchButton.addEventListener("click", async () => {
         const response = await fetch("http://localhost:8000/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ origin, destination, date }) });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || "The graph could not be created.");
-        output.innerHTML = `<div class="result_card"><h2>${data.origin.city_name} → ${data.destination.city_name}</h2><p>${data.graph.nodes.length} nodes and ${data.graph.edges.length} available car edges.</p><button id="view_graph_button" type="button">View 3D graph</button></div>`;
         latestGraph = data.graph;
-        document.getElementById("view_graph_button").addEventListener("click", () => {
-            graphSection.classList.remove("hidden");
-            requestAnimationFrame(() => renderGraph(latestGraph));
-            graphSection.scrollIntoView({ behavior: "smooth" });
-        });
+        showSearchResult(data);
     } catch (error) { showMessage(error.message, true); }
     finally { searchButton.disabled = false; searchButton.textContent = "Search routes"; }
 });

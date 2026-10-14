@@ -83,9 +83,10 @@ def build_initial_route_graph(
     origin_nodes: list[TransportNode],
     destination_nodes: list[TransportNode],
     gateway_stations: list[TransportNode],
+    additional_edges: list[TravelEdge] | None = None,
     policy: GraphPolicy | None = None,
 ) -> RouteGraph:
-    """Build direct-car and conditional car-access edges without fabricating transit data."""
+    """Build car edges and append provider connections between known graph nodes."""
     policy = policy or GraphPolicy()
     origin_center = next(node for node in origin_nodes if node.type == "city_center")
     destination_center = next(
@@ -108,14 +109,20 @@ def build_initial_route_graph(
     accepted_gateways = [
         station for station in gateway_stations if station.id in accepted_gateway_ids
     ][: policy.max_gateway_stations]
+    accepted_edges = edges[:1] + [
+        edge
+        for edge in edges[1:]
+        if edge.destination_node_id in {node.id for node in accepted_gateways}
+    ]
+    known_node_ids = {node.id for node in origin_nodes + destination_nodes + accepted_gateways}
+    provider_edges = [
+        edge
+        for edge in additional_edges or []
+        if edge.origin_node_id in known_node_ids and edge.destination_node_id in known_node_ids
+    ]
     return RouteGraph(
         nodes=origin_nodes + destination_nodes + accepted_gateways,
-        edges=edges[:1]
-        + [
-            edge
-            for edge in edges[1:]
-            if edge.destination_node_id in {node.id for node in accepted_gateways}
-        ],
+        edges=accepted_edges + provider_edges,
         origin_node_ids=[node.id for node in origin_nodes],
         destination_node_ids=[node.id for node in destination_nodes],
         policy=policy,
