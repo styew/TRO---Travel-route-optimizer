@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from backend.api.schemas.search import SearchRequest
 from backend.database.repository import CityNodeRepository
 from backend.services.geocoding import geocode
+from backend.services.flight_provider import discover_flight_edges
 from backend.services.graph_builder import build_initial_route_graph, create_gateway_station_nodes
 from backend.services.infra import (
     InfrastructureProviderUnavailableError,
@@ -62,7 +63,7 @@ async def get_city_infrastructure(city: dict, debug: bool) -> tuple[dict, bool, 
     summary="Discover initial graph nodes and estimated car edges",
     description="""Geocodes origin and destination, loads or discovers city infrastructure, and assembles a serializable graph.
 
-The graph always contains an estimated direct-car edge between city centers. When the origin has no local eligible train station, it may contain estimated car-access edges to nearby main-station gateways. The API also ranks up to ten complete, cycle-free paths by lowest estimated price, with an initial maximum of four segments. Train and flight connection edges will be added only after their timetable providers are integrated. Car values are transparent estimates, not live routing results.""",
+The graph always contains an estimated direct-car edge between city centers. When the origin has no local eligible train station, it may contain estimated car-access edges to nearby main-station gateways. When airport nodes have IATA codes, it also asks Travelpayouts for cached flight-price references for the chosen date. The API ranks up to ten complete, cycle-free paths by lowest estimated price, with an initial maximum of four segments. Car values and flight durations are transparent estimates; Travelpayouts prices are cached references, not bookable live offers.""",
     response_description="City data, selected infrastructure, nodes, estimated car edges, and cache status.",
     responses={404: {"description": "The origin or destination could not be geocoded as a city."}, 503: {"description": "A geocoding provider is temporarily unavailable or rate limited."}, 200: {"description": "Initial graph nodes and available estimated car edges were discovered."}},
 )
@@ -94,10 +95,18 @@ async def search(request: SearchRequest):
             logger.warning("Could not discover gateway stations for %s: %s", origin_data["city_name"], error)
             graph_warnings.append({"city": origin_data["city_name"], "infrastructure_type": "gateway_train_stations", "message": "Nearby main stations could not be discovered; only the direct car edge is available."})
 
-    graph = build_initial_route_graph(origin_nodes, destination_nodes, gateway_nodes)
+    flight_edges, flight_warnings = await discover_flight_edges(
+        origin_nodes, destination_nodes, request.date
+    )
+    graph = build_initial_route_graph(
+        origin_nodes,
+        destination_nodes,
+        gateway_nodes,
+        additional_edges=flight_edges,
+    )
     route_plan = find_lowest_price_routes(graph)
     response = {"origin": origin_data, "destination": destination_data, "origin_infrastructure": origin_infrastructure, "destination_infrastructure": destination_infrastructure, "origin_nodes": origin_nodes, "destination_nodes": destination_nodes, "graph": graph, "route_plan": route_plan, "cache": {"origin_hit": origin_cache_hit, "destination_hit": destination_cache_hit}}
-    warnings = origin_warnings + destination_warnings + graph_warnings
+    warnings = origin_warnings + destination_warnings + graph_warnings + flight_warnings
     if warnings:
         response["warnings"] = warnings
     if request.debug:

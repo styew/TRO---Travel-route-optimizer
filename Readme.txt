@@ -223,9 +223,9 @@ The exact providers will be evaluated during the initial research phase.
 
 ### Database
 
-**Not required for V1.**
+The development version uses SQLite to cache approved city infrastructure and avoid unnecessary external API calls.
 
-A database may be introduced in the future if persistent data becomes useful for:
+The database may be expanded in the future for:
 
 * Caching API results
 * Historical price data
@@ -252,6 +252,24 @@ It may be considered in future versions for features such as:
 
 * Docker
 * Docker Compose
+
+---
+
+## Flight Reference Prices
+
+TRO can optionally use the Travelpayouts Aviasales Data API to add flight edges between discovered airport nodes that have IATA codes.
+
+1. Copy `.env.example` to `.env`.
+2. Set `TRAVELPAYOUTS_API_TOKEN` to the private token from the Travelpayouts profile.
+3. Keep `.env` private. It is ignored by Git and must never be committed.
+
+The endpoint provides cached reference prices, not live bookable offers. TRO labels these prices accordingly and currently estimates flight duration from the airport distance. No booking link is created by this integration.
+
+When running the backend with Docker, pass the environment file explicitly because Docker does not copy `.env` into the image:
+
+```powershell
+docker run --name tro-backend --env-file .env -p 8000:8000 backend:latest
+```
 
 ---
 
