@@ -112,6 +112,7 @@ function showSearchResult(data, basicFilters) {
     const nodeNames = new Map(data.graph.nodes.map((node) => [node.id, node.name]));
     const commercialTrainWarning = (data.warnings || []).find((warning) => warning.infrastructure_type === "commercial_trains");
     const flightWarning = (data.warnings || []).find((warning) => warning.infrastructure_type === "flights");
+    const airportGatewayWarning = (data.warnings || []).find((warning) => warning.infrastructure_type === "airport_gateways");
     const card = document.createElement("div");
     card.className = "result_card";
     const title = document.createElement("h2");
@@ -179,9 +180,11 @@ function showSearchResult(data, basicFilters) {
         flightDetails.appendChild(flights);
     } else {
         const explanation = document.createElement("p");
-        explanation.textContent = flightWarning
-            ? flightWarning.message
-            : "Travelpayouts may not have a cached price for every airport pair and date. Car connections are still shown in the graph.";
+        explanation.textContent = [
+            flightWarning?.message,
+            airportGatewayWarning?.message,
+            "Travelpayouts may not have a cached price for every airport pair and date. Car connections are still shown in the graph.",
+        ].filter(Boolean).join(" ");
         flightDetails.appendChild(explanation);
     }
     const graphButton = document.createElement("button");
@@ -423,3 +426,9 @@ document.getElementById("reset_graph_button").addEventListener("click", () => gr
 /** Prevent accidental historical flight queries, which cannot have current cached prices. */
 const dateInput = document.getElementById("date");
 dateInput.min = new Date().toISOString().slice(0, 10);
+if (!dateInput.value || dateInput.value < dateInput.min) {
+    // The static page may have been opened on a later day than its original
+    // default date. Move stale values forward so flight search is not silently
+    // blocked by the backend before a traveller can make a valid search.
+    dateInput.value = dateInput.min;
+}
