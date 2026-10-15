@@ -263,7 +263,7 @@ TRO can optionally use the Travelpayouts Aviasales Data API to add flight edges 
 2. Set `TRAVELPAYOUTS_API_TOKEN` to the private token from the Travelpayouts profile.
 3. Keep `.env` private. It is ignored by Git and must never be committed.
 
-The endpoint provides cached reference prices, not live bookable offers. TRO labels these prices accordingly and currently estimates flight duration from the airport distance. No booking link is created by this integration.
+The endpoint provides cached reference prices, not live bookable offers. TRO first checks the date-specific reference endpoint and, if it has no result, checks the calendar cache for the exact requested date before using the older cheapest-price fallback. TRO labels these prices accordingly and currently estimates flight duration from the airport distance. No booking link is created by this integration.
 
 Airport discovery first reads IATA/ICAO codes from OpenStreetMap. If an Overpass outage requires the Nominatim airport fallback, TRO also attempts a public Wikidata lookup using the airport's Wikidata identifier. An airport node without an IATA code remains visible in the graph, but cannot be used for a Travelpayouts airport-pair search; the API reports that limitation explicitly.
 

@@ -13,6 +13,7 @@ from backend.models.node import TransportNode
 load_dotenv()
 
 TRAVELPAYOUTS_CHEAP_PRICES_URL = "https://api.travelpayouts.com/v1/prices/cheap"
+TRAVELPAYOUTS_CALENDAR_PRICES_URL = "https://api.travelpayouts.com/v1/prices/calendar"
 TRAVELPAYOUTS_DATE_PRICES_URL = "https://api.travelpayouts.com/aviasales/v3/prices_for_dates"
 TRAVELPAYOUTS_PROVIDER_NAME = "Travelpayouts Aviasales Data API"
 
@@ -143,6 +144,77 @@ class TravelpayoutsFlightProvider:
             )
         return sorted(edges, key=lambda edge: edge.estimated_price_eur)
 
+    async def _find_calendar_connection_edges(
+        self,
+        origin: TransportNode,
+        destination: TransportNode,
+        departure_date: str,
+    ) -> list[TravelEdge]:
+        """Read the legacy monthly cache when the date-specific cache is empty.
+
+        Travelpayouts' date endpoint only retains recently observed fares. The
+        calendar endpoint is still cached data, but can retain a price for the
+        requested day even when the newer endpoint has no result. It is used as
+        a fallback only and never turns an unpriced flight into a graph edge.
+        """
+        origin_iata = _airport_iata(origin)
+        destination_iata = _airport_iata(destination)
+        if not self.configured or not origin_iata or not destination_iata:
+            return []
+        try:
+            date.fromisoformat(departure_date)
+        except ValueError:
+            return []
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.get(
+                    TRAVELPAYOUTS_CALENDAR_PRICES_URL,
+                    params={
+                        "origin": origin_iata,
+                        "destination": destination_iata,
+                        "depart_date": departure_date,
+                        "calendar_type": "departure_date",
+                        "currency": "EUR",
+                    },
+                    headers={
+                        "X-Access-Token": self._token,
+                        "User-Agent": "TRO-Travel-Route-Optimizer/0.1",
+                    },
+                )
+                response.raise_for_status()
+                offer = response.json().get("data", {}).get(departure_date)
+        except (httpx.HTTPError, ValueError) as error:
+            raise FlightProviderUnavailableError(
+                "Travelpayouts flight data is temporarily unavailable."
+            ) from error
+        if not isinstance(offer, dict) or not isinstance(offer.get("price"), (int, float)):
+            return []
+        distance_km = round(_great_circle_distance_km(origin, destination), 2)
+        departure_at = offer.get("departure_at")
+        return [TravelEdge(
+            id=f"flight:travelpayouts-calendar:{origin_iata}:{destination_iata}:{departure_date}",
+            origin_node_id=origin.id,
+            destination_node_id=destination.id,
+            mode="flight",
+            edge_type="flight_connection",
+            estimated_distance_km=distance_km,
+            estimated_duration_minutes=_estimated_flight_duration_minutes(distance_km),
+            estimated_price_eur=round(float(offer["price"]), 2),
+            provider=TRAVELPAYOUTS_PROVIDER_NAME,
+            metadata={
+                "origin_iata": origin_iata,
+                "destination_iata": destination_iata,
+                "airline": offer.get("airline"),
+                "flight_number": offer.get("flight_number"),
+                "departure_at": departure_at,
+                "transfers": offer.get("transfers"),
+                "price_status": "monthly_cached_reference",
+                "price_currency": "EUR",
+                "price_expires_at": offer.get("expires_at"),
+                "duration_status": "TRO distance estimate",
+            },
+        )]
+
     async def find_connection_edges(
         self,
         origin: TransportNode,
@@ -227,6 +299,11 @@ class TravelpayoutsFlightProvider:
             ))
         if edges:
             return sorted(edges, key=lambda edge: edge.estimated_price_eur)
+        calendar_edges = await self._find_calendar_connection_edges(
+            origin, destination, departure_date
+        )
+        if calendar_edges:
+            return calendar_edges
         return await self._find_legacy_connection_edges(origin, destination, departure_date)
 
 
