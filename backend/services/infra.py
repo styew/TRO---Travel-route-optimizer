@@ -22,6 +22,9 @@ OVERPASS_URLS = (
 TRAIN_RADIUS_METERS = 20_000
 AIRPORT_RADIUS_METERS = 50_000
 GATEWAY_TRAIN_RADIUS_METERS = 100_000
+GATEWAY_AIRPORT_RADIUS_METERS = 220_000
+MAX_CITY_AIRPORTS = 2
+MAX_GATEWAY_AIRPORTS = 3
 OVERPASS_MIN_REQUEST_INTERVAL_SECONDS = 1.0
 OVERPASS_MAX_RETRIES = 3
 OVERPASS_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -147,6 +150,7 @@ def _normalize_elements(elements: list[dict[str, Any]], origin_latitude: float, 
             "icao": tags.get("icao"),
             "scheduled_service": tags.get("scheduled_service"),
             "passenger": tags.get("passenger"),
+            "wikidata": tags.get("wikidata"),
             "source": "openstreetmap-overpass",
         })
     return sorted(normalized, key=lambda item: item["distance_km"])
@@ -238,6 +242,21 @@ async def discover_airports(latitude: float, longitude: float) -> list[dict[str,
     return _normalize_elements(await _query_overpass(query), latitude, longitude, "airport")
 
 
+async def discover_gateway_airports(latitude: float, longitude: float) -> list[dict[str, Any]]:
+    """Find IATA-tagged commercial airport candidates for a bounded car connection.
+
+    The query deliberately targets only airports already tagged with IATA codes.
+    This avoids treating thousands of local airfields as flight candidates while
+    keeping the request small enough for a public Overpass instance.
+    """
+    query = f'''[out:json][timeout:25];
+    (node["aeroway"="aerodrome"]["iata"](around:{GATEWAY_AIRPORT_RADIUS_METERS},{latitude},{longitude});
+     way["aeroway"="aerodrome"]["iata"](around:{GATEWAY_AIRPORT_RADIUS_METERS},{latitude},{longitude});
+     relation["aeroway"="aerodrome"]["iata"](around:{GATEWAY_AIRPORT_RADIUS_METERS},{latitude},{longitude}););
+    out center tags;'''
+    return _normalize_elements(await _query_overpass(query), latitude, longitude, "airport")
+
+
 def _airport_has_passenger_service(airport: dict[str, Any]) -> bool:
     """Check whether an airport has an OpenStreetMap signal of passenger service."""
     return bool(
@@ -255,16 +274,58 @@ def _airport_matches_city(airport: dict[str, Any], city_name: str) -> bool:
     return bool(city_words) and all(word in airport_words for word in city_words)
 
 
+def _airport_relevance_score(airport: dict[str, Any], city_name: str) -> tuple:
+    """Rank passenger airports without encoding city-specific airport names."""
+    city_match = _airport_matches_city(airport, city_name)
+    passenger_signals = sum((
+        bool(airport.get("iata")),
+        airport.get("scheduled_service") == "yes",
+        airport.get("passenger") == "yes",
+    ))
+    # Higher relevance signals come first; distance breaks ties predictably.
+    return (-int(city_match), -passenger_signals, airport["distance_km"], airport["name"])
+
+
 def select_city_airports(
     airports: list[dict[str, Any]], city_name: str
 ) -> list[dict[str, Any]]:
-    """Keep commercial airports whose names identify them as airports of this city."""
-    return [
-        airport
-        for airport in airports
-        if _airport_has_passenger_service(airport)
-        and _airport_matches_city(airport, city_name)
+    """Select up to two relevant commercial airports using generic evidence.
+
+    A city-name match has priority. If airport naming differs from the city (for
+    example, an airport named after a district), the nearest commercial airport
+    with passenger-service signals is still a valid candidate.
+    """
+    commercial_airports = [
+        airport for airport in airports if _airport_has_passenger_service(airport)
     ]
+    matching_airports = [
+        airport for airport in commercial_airports if _airport_matches_city(airport, city_name)
+    ]
+    candidates = matching_airports or commercial_airports
+    return sorted(candidates, key=lambda airport: _airport_relevance_score(airport, city_name))[:MAX_CITY_AIRPORTS]
+
+
+def select_gateway_airports(
+    airports: list[dict[str, Any]], excluded_ids: set[str]
+) -> list[dict[str, Any]]:
+    """Choose nearby commercial airports with IATA codes, excluding city airports.
+
+    Gateway airports are not permanent city infrastructure. They are discovered
+    only after the local airport pairs produced no flight reference, then capped
+    to prevent an expensive all-Germany flight-pair search.
+    """
+    candidates = [
+        airport for airport in airports
+        if airport["id"] not in excluded_ids and airport.get("iata")
+        and _airport_has_passenger_service(airport)
+    ]
+    return sorted(
+        candidates,
+        key=lambda airport: (-sum((
+            airport.get("scheduled_service") == "yes",
+            airport.get("passenger") == "yes",
+        )), airport["distance_km"], airport["name"]),
+    )[:MAX_GATEWAY_AIRPORTS]
 
 
 def explain_airport_filter(
