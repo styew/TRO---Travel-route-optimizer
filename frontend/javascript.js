@@ -14,15 +14,20 @@ function showMessage(message, isError = false) {
 }
 
 /** Show the available graph connections, including every cached flight reference. */
-function showSearchResult(data) {
+function showSearchResult(data, basicFilters) {
     const flightEdges = data.graph.edges.filter((edge) => edge.edge_type === "flight_connection");
+    const regionalTrainEdges = data.graph.edges.filter((edge) => edge.edge_type === "train_connection" && edge.metadata.ticket_coverage === "Deutschlandticket");
     const card = document.createElement("div");
     card.className = "result_card";
     const title = document.createElement("h2");
     title.textContent = `${data.origin.city_name} → ${data.destination.city_name}`;
     const summary = document.createElement("p");
     summary.textContent = `${data.graph.nodes.length} nodes and ${data.graph.edges.length} available connections.`;
-    card.append(title, summary);
+    const filterNotice = document.createElement("p");
+    const ticketStatus = basicFilters.hasDeutschlandticket ? "has a Deutschlandticket" : "does not have a Deutschlandticket";
+    filterNotice.className = "filter_notice";
+    filterNotice.textContent = `Filters selected: ${basicFilters.travellers} traveller(s); the traveller ${ticketStatus}; maximum ${data.graph.policy.max_transport_categories} transport categories. Repeated train legs count as one category.`;
+    card.append(title, summary, filterNotice);
 
     const flightDetails = document.createElement("details");
     flightDetails.className = "connection_details";
@@ -55,6 +60,33 @@ function showSearchResult(data) {
         graphSection.scrollIntoView({ behavior: "smooth" });
     });
     card.append(flightDetails, graphButton);
+    if (basicFilters.hasDeutschlandticket) {
+        const trainDetails = document.createElement("details");
+        trainDetails.className = "connection_details";
+        const trainSummary = document.createElement("summary");
+        trainSummary.textContent = regionalTrainEdges.length
+            ? `${regionalTrainEdges.length} Deutschlandticket regional route(s) found`
+            : "No Deutschlandticket regional route was found";
+        trainDetails.appendChild(trainSummary);
+        if (regionalTrainEdges.length) {
+            const list = document.createElement("ul");
+            regionalTrainEdges.forEach((edge) => {
+                const item = document.createElement("li");
+                const lines = edge.metadata.legs.map((leg) => leg.line).filter(Boolean).join(" → ");
+                item.textContent = `${lines || "Regional train"} · ${edge.estimated_duration_minutes} min · ${edge.metadata.transfer_count} transfer(s) · covered by Deutschlandticket`;
+                list.appendChild(item);
+            });
+            trainDetails.appendChild(list);
+        } else {
+            const explanation = document.createElement("p");
+            const trainWarning = (data.warnings || []).find((warning) => warning.infrastructure_type === "regional_trains");
+            explanation.textContent = trainWarning
+                ? trainWarning.message
+                : "No regional-only route was returned for this date.";
+            trainDetails.appendChild(explanation);
+        }
+        card.insertBefore(trainDetails, graphButton);
+    }
     output.replaceChildren(card);
     output.className = "";
 }
@@ -94,7 +126,7 @@ function renderGraph(graph) {
     graph.edges.forEach((edge) => {
         const from = positions.get(edge.origin_node_id);
         const to = positions.get(edge.destination_node_id);
-        const edgeColor = edge.mode === "flight" ? 0xf72585 : 0x7dd3fc;
+        const edgeColor = edge.mode === "flight" ? 0xf72585 : edge.mode === "train" ? 0x22c55e : 0x7dd3fc;
         if (from && to) scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([from, to]), new THREE.LineBasicMaterial({ color: edgeColor })));
     });
     scene.add(new THREE.AmbientLight(0xffffff, 1.5));
@@ -111,15 +143,20 @@ searchButton.addEventListener("click", async () => {
     const origin = document.getElementById("origin").value.trim();
     const destination = document.getElementById("destination").value.trim();
     const date = document.getElementById("date").value;
+    const basicFilters = {
+        hasDeutschlandticket: document.getElementById("d_ticket").checked,
+        travellers: Number(document.getElementById("travellers").value),
+        maxTransportCategories: Number(document.getElementById("max_transport_categories").value),
+    };
     if (!origin || !destination || !date) return showMessage("Enter origin, destination, and date before searching.", true);
     searchButton.disabled = true;
     searchButton.textContent = "Building graph…";
     try {
-        const response = await fetch("http://localhost:8000/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ origin, destination, date }) });
+        const response = await fetch("http://localhost:8000/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ origin, destination, date, has_deutschlandticket: basicFilters.hasDeutschlandticket, travellers: basicFilters.travellers, max_transport_categories: basicFilters.maxTransportCategories }) });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || "The graph could not be created.");
         latestGraph = data.graph;
-        showSearchResult(data);
+        showSearchResult(data, basicFilters);
     } catch (error) { showMessage(error.message, true); }
     finally { searchButton.disabled = false; searchButton.textContent = "Search routes"; }
 });

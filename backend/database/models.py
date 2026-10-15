@@ -20,6 +20,7 @@ class CityRecord(Base):
     latitude: Mapped[float] = mapped_column(Float)
     longitude: Mapped[float] = mapped_column(Float)
     source: Mapped[str] = mapped_column(String(100))
+    infrastructure_filter_version: Mapped[int] = mapped_column(Integer, default=1)
     fetched_at: Mapped[datetime] = mapped_column(DateTime)
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
 
