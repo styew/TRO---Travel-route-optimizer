@@ -53,6 +53,12 @@
                     >
                 </div>
 
+                <div class="input_field">
+                    <label for="departure_time">Departure time</label>
+                    <input type="time" id="departure_time" name="departure_time" value="08:00">
+                    <p class="input_hint">Used to check train departures after an estimated car connection.</p>
+                </div>
+
             </div>
 
             <section class="filter_group" aria-labelledby="basic_filters_title">
@@ -85,6 +91,20 @@
                         </select>
                         <p class="input_hint">Repeated legs with the same type, such as train → train → train, count as one category.</p>
                     </div>
+                    <section class="transport_filter" aria-labelledby="train_filter_title">
+                        <h4 id="train_filter_title">Train</h4>
+                        <div class="input_field">
+                            <label for="minimum_train_transfer_minutes">Minimum transfer time</label>
+                            <select id="minimum_train_transfer_minutes" name="minimum_train_transfer_minutes">
+                                <option value="0" selected>Any available connection</option>
+                                <option value="10">At least 10 minutes</option>
+                                <option value="15">At least 15 minutes</option>
+                                <option value="20">At least 20 minutes</option>
+                                <option value="30">At least 30 minutes</option>
+                            </select>
+                            <p class="input_hint">Every train-to-train change must meet this scheduled waiting time.</p>
+                        </div>
+                    </section>
                 </div>
             </details>
 

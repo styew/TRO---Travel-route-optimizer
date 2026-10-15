@@ -12,7 +12,7 @@ from backend.database.models import (
 from backend.database.session import SessionLocal
 
 CACHE_TTL_DAYS = 30
-INFRASTRUCTURE_FILTER_VERSION = 3
+INFRASTRUCTURE_FILTER_VERSION = 5
 
 
 def _utc_now() -> datetime:

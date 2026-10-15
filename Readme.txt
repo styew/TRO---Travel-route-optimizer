@@ -265,6 +265,12 @@ TRO can optionally use the Travelpayouts Aviasales Data API to add flight edges 
 
 The endpoint provides cached reference prices, not live bookable offers. TRO labels these prices accordingly and currently estimates flight duration from the airport distance. No booking link is created by this integration.
 
+Airport discovery first reads IATA/ICAO codes from OpenStreetMap. If an Overpass outage requires the Nominatim airport fallback, TRO also attempts a public Wikidata lookup using the airport's Wikidata identifier. An airport node without an IATA code remains visible in the graph, but cannot be used for a Travelpayouts airport-pair search; the API reports that limitation explicitly.
+
+Airport selection is city-agnostic: TRO ranks commercial candidates inside the configured 50 km radius by city-name relevance, passenger-service signals, IATA availability, and distance. It returns at most two principal candidates. If an airport's name does not contain the city name, a nearby commercial candidate can still be selected instead of being lost to a fragile name-only rule.
+
+TRO also makes one bounded comparison pass for departure-airport gateways. It checks up to three nearby IATA-tagged commercial airports within a 220 km discovery radius and keeps only gateways reachable in at most three hours by the current car estimate. This makes routes such as `car -> Memmingen Airport -> flight` possible and lets their total cost compete with a direct departure from Nürnberg, without querying every airport in Germany. It does not assume a rental car after landing.
+
 When running the backend with Docker, pass the environment file explicitly because Docker does not copy `.env` into the image:
 
 ```powershell
@@ -277,7 +283,15 @@ docker run --name tro-backend --env-file .env -p 8000:8000 backend:latest
 
 TRO uses the free **GTFS Regional Rail Germany** dataset with a local OpenTripPlanner (OTP) service to calculate German regional-rail itineraries. The data covers regional services such as RB, RE, IRE and S-Bahn. It is intentionally separate from commercial train search and does not provide ticket prices or booking links.
 
-When the traveller confirms that they already have a Deutschlandticket, TRO adds regional itineraries as `train_connection` graph edges with a zero marginal ticket cost. The planned times, operators and internal transfers are retained in the edge metadata. This zero cost does not mean a Deutschlandticket can be purchased for free.
+When the traveller confirms that they already have a Deutschlandticket, TRO adds regional itineraries as `train_connection` graph edges with a zero marginal ticket cost. The planned times, operators, internal transfers, and the scheduled waiting time at every train-to-train transfer are retained in the edge metadata. The planner accepts the complete locally filtered regional feed, including regional operator labels that are not simply RB or RE, while still rejecting clear long-distance services. This zero cost does not mean a Deutschlandticket can be purchased for free.
+
+The search also accepts a local `departure_time` (`HH:MM`, Europe/Berlin). Direct car estimates and car access to a nearby gateway station receive planned departure and arrival times. A gateway train search begins only after the estimated drive plus a ten-minute parking/platform buffer, so an earlier train cannot be proposed after driving to that station.
+
+## Commercial Rail and Omio
+
+Paid rail search is represented in the backend by a provider boundary named `CommercialTrainProvider`. Its initial implementation, `OmioTrainProvider`, intentionally makes no request until TRO receives approved Omio partner credentials and the partner-specific API contract. The public browser never receives an API key or affiliate marker.
+
+After approval, the provider will return timed, priced train edges with booking URLs. The next composition stage will join a zero-marginal-cost Deutschlandticket edge to a paid Omio edge at an eligible interchange station, respecting the incoming train arrival and a minimum transfer time. Consecutive regional and paid train legs remain the same `train` transport category, although they are distinct booked services.
 
 ### Starting the local regional-train planner
 

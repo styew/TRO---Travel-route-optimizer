@@ -66,6 +66,7 @@ def _candidate_from_result(
         "icao": tags.get("icao"),
         "scheduled_service": tags.get("scheduled_service"),
         "passenger": tags.get("passenger"),
+        "wikidata": tags.get("wikidata"),
         "fallback_terminal_type": terminal_type,
         "source": "nominatim-fallback",
     }
@@ -78,16 +79,22 @@ async def discover_terminal_fallback(
     terminal_type: Literal["train_station", "airport"],
 ) -> list[dict]:
     """Find one nearby main station or commercial airport after an Overpass outage."""
-    query = (
-        f"{city_name} Hauptbahnhof"
+    queries = (
+        [f"{city_name} Hauptbahnhof"]
         if terminal_type == "train_station"
-        else f"{city_name} airport"
+        else [f"{city_name} airport", f"{city_name} aerodrome"]
     )
     max_distance_km = 20 if terminal_type == "train_station" else 50
-    for result in await _search_nominatim(query):
-        candidate = _candidate_from_result(
-            result, latitude, longitude, terminal_type, max_distance_km
-        )
-        if candidate is not None:
-            return [candidate]
+    for query in queries:
+        candidates = []
+        for result in await _search_nominatim(query):
+            candidate = _candidate_from_result(
+                result, latitude, longitude, terminal_type, max_distance_km
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+        if candidates:
+            # A search can return several airports; keep their order by proximity
+            # for the generic commercial-airport ranking performed afterwards.
+            return sorted(candidates, key=lambda candidate: candidate["distance_km"])
     return []

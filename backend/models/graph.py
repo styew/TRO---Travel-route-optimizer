@@ -14,6 +14,7 @@ class GraphPolicy(BaseModel):
     max_transport_categories: int = Field(default=4, ge=1, le=6)
     max_edge_hops: int = Field(default=12, ge=1, le=30)
     max_car_access_minutes: int = Field(default=90, ge=15, le=180)
+    max_airport_access_minutes: int = Field(default=180, ge=30, le=300)
     estimated_car_speed_kmh: float = Field(default=70.0, gt=0)
     estimated_road_distance_factor: float = Field(default=1.25, ge=1.0, le=2.0)
     estimated_car_cost_per_hour_eur: float = Field(default=12.0, ge=0)
@@ -29,6 +30,7 @@ class TravelEdge(BaseModel):
     edge_type: Literal[
         "direct_car",
         "car_access_to_station",
+        "car_access_to_airport",
         "train_connection",
         "flight_connection",
         "ferry_connection",
@@ -62,6 +64,9 @@ class RouteOption(BaseModel):
     total_estimated_price_eur: float
     total_estimated_duration_minutes: int
     total_estimated_distance_km: float
+    planned_departure: str | None = None
+    planned_arrival: str | None = None
+    total_transfer_wait_minutes: int = 0
     transfer_count: int
     transport_category_count: int
     transport_category_changes: int

@@ -1,6 +1,7 @@
 """Rank complete graph paths by lowest estimated price."""
 
 from collections import defaultdict
+from datetime import datetime
 
 from backend.models.graph import RouteGraph, RouteOption, RoutePlan, TravelEdge
 
@@ -21,6 +22,8 @@ def _create_route_option(rank: int, segments: list[TravelEdge]) -> RouteOption:
     internal_transfers = sum(
         int(edge.metadata.get("transfer_count", 0)) for edge in segments
     )
+    departure = segments[0].metadata.get("planned_departure")
+    arrival = segments[-1].metadata.get("planned_arrival")
     return RouteOption(
         rank=rank,
         node_path=[segments[0].origin_node_id] + [
@@ -36,6 +39,9 @@ def _create_route_option(rank: int, segments: list[TravelEdge]) -> RouteOption:
         total_estimated_distance_km=round(
             sum(edge.estimated_distance_km for edge in segments), 2
         ),
+        planned_departure=departure,
+        planned_arrival=arrival,
+        total_transfer_wait_minutes=sum(int(edge.metadata.get("total_transfer_wait_minutes", 0)) for edge in segments),
         transfer_count=internal_transfers + max(0, category_count - 1),
         transport_category_count=category_count,
         transport_category_changes=max(0, category_count - 1),
@@ -51,6 +57,17 @@ def find_lowest_price_routes(graph: RouteGraph, limit: int = 10) -> RoutePlan:
     completed_paths: list[list[TravelEdge]] = []
     destination_ids = set(graph.destination_node_ids)
 
+    def has_time_conflict(previous: TravelEdge, next_edge: TravelEdge) -> bool:
+        """Reject an itinerary when a scheduled next service leaves before arrival."""
+        previous_arrival = previous.metadata.get("planned_arrival")
+        next_departure = next_edge.metadata.get("planned_departure")
+        if not previous_arrival or not next_departure:
+            return False
+        try:
+            return datetime.fromisoformat(next_departure) < datetime.fromisoformat(previous_arrival)
+        except ValueError:
+            return False
+
     def explore(node_id: str, segments: list[TravelEdge], visited_nodes: set[str]) -> None:
         """Expand paths without cycles, excess category changes, or runaway edge hops."""
         if node_id in destination_ids and segments:
@@ -60,6 +77,8 @@ def find_lowest_price_routes(graph: RouteGraph, limit: int = 10) -> RoutePlan:
             return
         for edge in outgoing_edges[node_id]:
             if edge.destination_node_id in visited_nodes:
+                continue
+            if segments and has_time_conflict(segments[-1], edge):
                 continue
             next_segments = segments + [edge]
             if _count_transport_categories(next_segments) > graph.policy.max_transport_categories:

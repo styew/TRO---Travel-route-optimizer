@@ -13,6 +13,7 @@ from backend.models.node import TransportNode
 load_dotenv()
 
 TRAVELPAYOUTS_CHEAP_PRICES_URL = "https://api.travelpayouts.com/v1/prices/cheap"
+TRAVELPAYOUTS_DATE_PRICES_URL = "https://api.travelpayouts.com/aviasales/v3/prices_for_dates"
 TRAVELPAYOUTS_PROVIDER_NAME = "Travelpayouts Aviasales Data API"
 
 
@@ -60,7 +61,7 @@ class TravelpayoutsFlightProvider:
         """Report whether this environment can query the Flight Data API."""
         return bool(self._token)
 
-    async def find_connection_edges(
+    async def _find_legacy_connection_edges(
         self,
         origin: TransportNode,
         destination: TransportNode,
@@ -142,6 +143,92 @@ class TravelpayoutsFlightProvider:
             )
         return sorted(edges, key=lambda edge: edge.estimated_price_eur)
 
+    async def find_connection_edges(
+        self,
+        origin: TransportNode,
+        destination: TransportNode,
+        departure_date: str,
+    ) -> list[TravelEdge]:
+        """Use Travelpayouts' current date-specific endpoint before the legacy cache.
+
+        The v3 response includes itinerary duration, number of stops, and a
+        search link when available. It is still reference data, not live booking
+        inventory, but is materially richer than the old cheap-prices endpoint.
+        """
+        origin_iata = _airport_iata(origin)
+        destination_iata = _airport_iata(destination)
+        if not self.configured or not origin_iata or not destination_iata:
+            return []
+        try:
+            date.fromisoformat(departure_date)
+        except ValueError:
+            return []
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.get(
+                    TRAVELPAYOUTS_DATE_PRICES_URL,
+                    params={
+                        "origin": origin_iata,
+                        "destination": destination_iata,
+                        "departure_at": departure_date,
+                        "one_way": "true",
+                        "sorting": "price",
+                        "direct": "false",
+                        "currency": "eur",
+                        "limit": 30,
+                        "page": 1,
+                        "token": self._token,
+                    },
+                    headers={"User-Agent": "TRO-Travel-Route-Optimizer/0.1"},
+                )
+                response.raise_for_status()
+                offers = response.json().get("data", [])
+        except (httpx.HTTPError, ValueError) as error:
+            raise FlightProviderUnavailableError(
+                "Travelpayouts flight data is temporarily unavailable."
+            ) from error
+
+        if not isinstance(offers, list):
+            offers = []
+        distance_km = round(_great_circle_distance_km(origin, destination), 2)
+        edges: list[TravelEdge] = []
+        for index, offer in enumerate(offers, start=1):
+            if not isinstance(offer, dict) or not isinstance(offer.get("price"), (int, float)):
+                continue
+            duration = offer.get("duration")
+            has_duration = isinstance(duration, (int, float)) and duration > 0
+            ticket_link = offer.get("link")
+            booking_url = None
+            if isinstance(ticket_link, str) and ticket_link:
+                booking_url = ticket_link if ticket_link.startswith("http") else f"https://www.aviasales.com/search/{ticket_link.lstrip('/')}"
+            edges.append(TravelEdge(
+                id=f"flight:travelpayouts-v3:{origin_iata}:{destination_iata}:{departure_date}:{index}",
+                origin_node_id=origin.id,
+                destination_node_id=destination.id,
+                mode="flight",
+                edge_type="flight_connection",
+                estimated_distance_km=distance_km,
+                estimated_duration_minutes=round(float(duration)) if has_duration else _estimated_flight_duration_minutes(distance_km),
+                estimated_price_eur=round(float(offer["price"]), 2),
+                is_estimate=not has_duration,
+                provider=TRAVELPAYOUTS_PROVIDER_NAME,
+                booking_url=booking_url,
+                metadata={
+                    "origin_iata": offer.get("origin_airport") or origin_iata,
+                    "destination_iata": offer.get("destination_airport") or destination_iata,
+                    "airline": offer.get("airline"),
+                    "flight_number": offer.get("flight_number"),
+                    "departure_at": offer.get("departure_at"),
+                    "transfers": offer.get("transfers"),
+                    "price_status": "cached_reference_last_48_hours",
+                    "price_currency": str(offer.get("currency") or "EUR").upper(),
+                    "duration_status": "Travelpayouts itinerary duration" if has_duration else "TRO distance estimate",
+                },
+            ))
+        if edges:
+            return sorted(edges, key=lambda edge: edge.estimated_price_eur)
+        return await self._find_legacy_connection_edges(origin, destination, departure_date)
+
 
 async def discover_flight_edges(
     origin_nodes: list[TransportNode],
@@ -155,11 +242,31 @@ async def discover_flight_edges(
             "infrastructure_type": "flights",
             "message": "Flight reference prices are not configured on this server.",
         }]
+    try:
+        requested_date = date.fromisoformat(departure_date)
+    except ValueError:
+        return [], [{
+            "infrastructure_type": "flights",
+            "message": "Flight search requires a valid departure date.",
+        }]
+    if requested_date < date.today():
+        return [], [{
+            "infrastructure_type": "flights",
+            "message": "Flight reference prices cannot be requested for a past departure date. Choose a future date.",
+        }]
 
     origin_airports = [node for node in origin_nodes if _airport_iata(node)]
     destination_airports = [node for node in destination_nodes if _airport_iata(node)]
     edges: list[TravelEdge] = []
     warnings: list[dict[str, str]] = []
+    missing_origin_codes = [node.name for node in origin_nodes if node.type == "airport" and not _airport_iata(node)]
+    missing_destination_codes = [node.name for node in destination_nodes if node.type == "airport" and not _airport_iata(node)]
+    if missing_origin_codes or missing_destination_codes:
+        missing_airports = missing_origin_codes + missing_destination_codes
+        warnings.append({
+            "infrastructure_type": "flights",
+            "message": "Flight search was skipped for airport nodes without an IATA code: " + ", ".join(missing_airports) + ".",
+        })
     for origin_airport in origin_airports:
         for destination_airport in destination_airports:
             try:
