@@ -36,10 +36,16 @@ class InfrastructureProviderUnavailableError(RuntimeError):
 
 
 def _normalize_text(value: str) -> str:
+    """Normalize accents and punctuation before comparing public infrastructure names."""
     value = unicodedata.normalize("NFKD", value)
     value = "".join(char for char in value if not unicodedata.combining(char))
     return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
+
+def _station_city_words(city_name: str) -> list[str]:
+    """Remove German connecting words omitted in station names, such as Frankfurt (Main)."""
+    ignored_words = {"am", "an", "der", "im", "in"}
+    return [word for word in _normalize_text(city_name).split() if word not in ignored_words]
 
 def _distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     radius_km = 6_371.0088
@@ -182,7 +188,7 @@ def explain_train_station_filter(
     normalized_city = _normalize_text(city_name)
     if not normalized_city:
         return {"rule_applied": "no_city_name", "selected": [], "candidates": []}
-    city_words = normalized_city.split()
+    city_words = _station_city_words(city_name)
     hbf_stations = []
     exact_name_stations = []
     candidates = []
@@ -238,6 +244,7 @@ def _airport_has_passenger_service(airport: dict[str, Any]) -> bool:
         airport["iata"]
         or airport["scheduled_service"] == "yes"
         or airport["passenger"] == "yes"
+        or airport.get("fallback_terminal_type") == "airport"
     )
 
 

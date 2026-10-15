@@ -1,0 +1,32 @@
+services:
+  backend:
+    build: .
+    container_name: tro-backend
+    env_file: .env
+    environment:
+      DATABASE_URL: sqlite:////app/data/tro.db
+      OTP_GTFS_URL: http://otp:8080/otp/gtfs/v1
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./otp-data:/app/otp-data:ro
+    depends_on:
+      otp:
+        condition: service_started
+
+  otp:
+    image: docker.io/opentripplanner/opentripplanner:latest
+    container_name: tro-otp
+    command: ["--load", "--serve"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./otp-data/d-ticket:/var/opentripplanner
+
+  otp-build:
+    image: docker.io/opentripplanner/opentripplanner:latest
+    profiles: ["build"]
+    command: ["--build", "--save"]
+    volumes:
+      - ./otp-data/d-ticket:/var/opentripplanner

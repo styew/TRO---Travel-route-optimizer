@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 
 from backend.api.schemas.search import SearchRequest
 from backend.database.repository import CityNodeRepository
+from backend.models.graph import GraphPolicy
 from backend.services.geocoding import geocode
 from backend.services.flight_provider import discover_flight_edges
 from backend.services.graph_builder import build_initial_route_graph, create_gateway_station_nodes
@@ -21,6 +22,8 @@ from backend.services.infra import (
     select_city_airports,
 )
 from backend.services.node_factory import create_city_transport_nodes
+from backend.services.nominatim_infrastructure import discover_terminal_fallback
+from backend.services.regional_train_provider import discover_regional_train_edges
 from backend.services.route_planner import find_lowest_price_routes
 
 logger = logging.getLogger(__name__)
@@ -44,7 +47,21 @@ async def get_city_infrastructure(city: dict, debug: bool) -> tuple[dict, bool, 
         for infrastructure_type, result in (("train_stations", station_result), ("airports", airport_result)):
             if isinstance(result, Exception):
                 logger.warning("Could not discover %s for %s: %s", infrastructure_type, city["city_name"], result)
-                warnings.append({"city": city["city_name"], "infrastructure_type": infrastructure_type, "message": "External infrastructure data is temporarily unavailable."})
+                terminal_type = "train_station" if infrastructure_type == "train_stations" else "airport"
+                try:
+                    fallback = await discover_terminal_fallback(
+                        city["city_name"], city["latitude"], city["longitude"], terminal_type
+                    )
+                except httpx.HTTPError:
+                    fallback = []
+                if fallback:
+                    if infrastructure_type == "train_stations":
+                        raw_stations = fallback
+                    else:
+                        raw_airports = fallback
+                    warnings.append({"city": city["city_name"], "infrastructure_type": infrastructure_type, "message": "Overpass was unavailable; a Nominatim fallback terminal was used."})
+                else:
+                    warnings.append({"city": city["city_name"], "infrastructure_type": infrastructure_type, "message": "External infrastructure data is temporarily unavailable."})
             elif infrastructure_type == "train_stations":
                 raw_stations = result
             else:
@@ -53,7 +70,11 @@ async def get_city_infrastructure(city: dict, debug: bool) -> tuple[dict, bool, 
         infrastructure = {"train_stations": station_filter["selected"], "airports": select_city_airports(raw_airports, city["city_name"])}
         if debug:
             debug_data = {"cache_bypassed": True, "train_station_filter": station_filter, "airport_filter": explain_airport_filter(raw_airports, city["city_name"])}
-        elif not warnings:
+        unresolved_infrastructure = any(
+            warning["message"] == "External infrastructure data is temporarily unavailable."
+            for warning in warnings
+        )
+        if not unresolved_infrastructure:
             city_node_repository.save_infrastructure(city, infrastructure)
     return infrastructure, cache_hit, debug_data, warnings
 
@@ -63,7 +84,7 @@ async def get_city_infrastructure(city: dict, debug: bool) -> tuple[dict, bool, 
     summary="Discover initial graph nodes and estimated car edges",
     description="""Geocodes origin and destination, loads or discovers city infrastructure, and assembles a serializable graph.
 
-The graph always contains an estimated direct-car edge between city centers. When the origin has no local eligible train station, it may contain estimated car-access edges to nearby main-station gateways. When airport nodes have IATA codes, it also asks Travelpayouts for cached flight-price references for the chosen date. The API ranks up to ten complete, cycle-free paths by lowest estimated price, with an initial maximum of four segments. Car values and flight durations are transparent estimates; Travelpayouts prices are cached references, not bookable live offers.""",
+The graph always contains an estimated direct-car edge between city centers. When the origin has no local eligible train station, it may contain estimated car-access edges to nearby main-station gateways. When airport nodes have IATA codes, it asks Travelpayouts for cached flight-price references. If `has_deutschlandticket` is true and the local OpenTripPlanner service is available, it adds regional-rail itineraries with zero marginal ticket cost. The API ranks up to ten complete, cycle-free paths by lowest estimated price. `max_transport_categories` limits changes between car, train, flight, and ferry; consecutive train legs count as one category.""",
     response_description="City data, selected infrastructure, nodes, estimated car edges, and cache status.",
     responses={404: {"description": "The origin or destination could not be geocoded as a city."}, 503: {"description": "A geocoding provider is temporarily unavailable or rate limited."}, 200: {"description": "Initial graph nodes and available estimated car edges were discovered."}},
 )
@@ -95,18 +116,22 @@ async def search(request: SearchRequest):
             logger.warning("Could not discover gateway stations for %s: %s", origin_data["city_name"], error)
             graph_warnings.append({"city": origin_data["city_name"], "infrastructure_type": "gateway_train_stations", "message": "Nearby main stations could not be discovered; only the direct car edge is available."})
 
-    flight_edges, flight_warnings = await discover_flight_edges(
-        origin_nodes, destination_nodes, request.date
+    flight_result, train_result = await asyncio.gather(
+        discover_flight_edges(origin_nodes, destination_nodes, request.date),
+        discover_regional_train_edges(origin_nodes + gateway_nodes, destination_nodes, request.date, request.has_deutschlandticket),
     )
+    flight_edges, flight_warnings = flight_result
+    train_edges, train_warnings = train_result
     graph = build_initial_route_graph(
         origin_nodes,
         destination_nodes,
         gateway_nodes,
-        additional_edges=flight_edges,
+        additional_edges=flight_edges + train_edges,
+        policy=GraphPolicy(max_transport_categories=request.max_transport_categories),
     )
     route_plan = find_lowest_price_routes(graph)
     response = {"origin": origin_data, "destination": destination_data, "origin_infrastructure": origin_infrastructure, "destination_infrastructure": destination_infrastructure, "origin_nodes": origin_nodes, "destination_nodes": destination_nodes, "graph": graph, "route_plan": route_plan, "cache": {"origin_hit": origin_cache_hit, "destination_hit": destination_cache_hit}}
-    warnings = origin_warnings + destination_warnings + graph_warnings + flight_warnings
+    warnings = origin_warnings + destination_warnings + graph_warnings + flight_warnings + train_warnings
     if warnings:
         response["warnings"] = warnings
     if request.debug:

@@ -55,5 +55,9 @@ dist/
 
 *.log
 
+# Local routing data
+data/
+otp-data/
+
 # Local database
 *.db

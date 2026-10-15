@@ -12,6 +12,7 @@ from backend.database.models import (
 from backend.database.session import SessionLocal
 
 CACHE_TTL_DAYS = 30
+INFRASTRUCTURE_FILTER_VERSION = 3
 
 
 def _utc_now() -> datetime:
@@ -33,6 +34,8 @@ class CityNodeRepository:
                 )
             )
             if city is None:
+                return None
+            if city.infrastructure_filter_version != INFRASTRUCTURE_FILTER_VERSION:
                 return None
 
             rows = session.execute(
@@ -84,6 +87,7 @@ class CityNodeRepository:
             city_record.latitude = city["latitude"]
             city_record.longitude = city["longitude"]
             city_record.source = city["source"]
+            city_record.infrastructure_filter_version = INFRASTRUCTURE_FILTER_VERSION
             city_record.fetched_at = now
             city_record.expires_at = expires_at
             session.flush()

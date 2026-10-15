@@ -55,6 +55,39 @@
 
             </div>
 
+            <section class="filter_group" aria-labelledby="basic_filters_title">
+                <h3 id="basic_filters_title">Basic filters</h3>
+                <div class="filter_fields">
+                    <div class="input_field">
+                        <span class="filter_label">Deutschlandticket</span>
+                        <label class="checkbox_option" for="d_ticket">
+                            <input type="checkbox" id="d_ticket" name="d_ticket">
+                            <span>I already have a Deutschlandticket</span>
+                        </label>
+                    </div>
+                    <div class="input_field">
+                        <label for="travellers">Travellers</label>
+                        <input type="number" id="travellers" name="travellers" min="1" max="9" value="1">
+                    </div>
+                </div>
+            </section>
+
+            <details class="advanced_filters">
+                <summary>Advanced filters</summary>
+                <div class="advanced_filter_fields">
+                    <div class="input_field">
+                        <label for="max_transport_categories">Maximum transport categories</label>
+                        <select id="max_transport_categories" name="max_transport_categories">
+                            <option value="1">1 — one type only</option>
+                            <option value="2">2 — e.g. car → train</option>
+                            <option value="3">3 — e.g. car → train → flight</option>
+                            <option value="4" selected>4 — e.g. car → train → flight → car</option>
+                        </select>
+                        <p class="input_hint">Repeated legs with the same type, such as train → train → train, count as one category.</p>
+                    </div>
+                </div>
+            </details>
+
             <button id="search_button">
                 Search routes
             </button>

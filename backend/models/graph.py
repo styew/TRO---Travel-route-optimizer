@@ -8,10 +8,11 @@ from backend.models.node import TransportNode
 
 
 class GraphPolicy(BaseModel):
-    """Defines conservative limits for the first car-based graph expansion."""
+    """Defines safety limits while allowing several legs of the same transport type."""
 
     max_gateway_stations: int = Field(default=3, ge=1, le=5)
-    max_segments: int = Field(default=4, ge=1, le=8)
+    max_transport_categories: int = Field(default=4, ge=1, le=6)
+    max_edge_hops: int = Field(default=12, ge=1, le=30)
     max_car_access_minutes: int = Field(default=90, ge=15, le=180)
     estimated_car_speed_kmh: float = Field(default=70.0, gt=0)
     estimated_road_distance_factor: float = Field(default=1.25, ge=1.0, le=2.0)
@@ -62,11 +63,13 @@ class RouteOption(BaseModel):
     total_estimated_duration_minutes: int
     total_estimated_distance_km: float
     transfer_count: int
+    transport_category_count: int
+    transport_category_changes: int
 
 
 class RoutePlan(BaseModel):
     """Cheapest complete route options currently available in a route graph."""
 
     ranking_criterion: Literal["lowest_price"] = "lowest_price"
-    max_segments: int
+    max_transport_categories: int
     routes: list[RouteOption]

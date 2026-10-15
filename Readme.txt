@@ -273,6 +273,27 @@ docker run --name tro-backend --env-file .env -p 8000:8000 backend:latest
 
 ---
 
+## Regional Rail and Deutschlandticket
+
+TRO uses the free **GTFS Regional Rail Germany** dataset with a local OpenTripPlanner (OTP) service to calculate German regional-rail itineraries. The data covers regional services such as RB, RE, IRE and S-Bahn. It is intentionally separate from commercial train search and does not provide ticket prices or booking links.
+
+When the traveller confirms that they already have a Deutschlandticket, TRO adds regional itineraries as `train_connection` graph edges with a zero marginal ticket cost. The planned times, operators and internal transfers are retained in the edge metadata. This zero cost does not mean a Deutschlandticket can be purchased for free.
+
+### Starting the local regional-train planner
+
+Download the current GTFS feed, build the OTP graph, then start both services:
+
+```powershell
+.\scripts\update_regional_gtfs.ps1
+..\.venv\Scripts\python.exe .\scripts\build_d_ticket_gtfs.py
+docker compose --profile build run --rm otp-build
+docker compose up --build
+```
+
+The first OTP graph build takes longer than normal backend startup. It creates local files under `otp-data/`, which are ignored by Git. OTP exposes a local GraphQL endpoint on port `8080`; the TRO backend continues to work with car and flight edges if OTP is temporarily unavailable.
+
+---
+
 ## Assumptions and Limitations
 
 The application will initially provide estimated travel prices and times.
