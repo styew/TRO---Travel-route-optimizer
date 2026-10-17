@@ -56,7 +56,11 @@
                 <div class="input_field">
                     <label for="departure_time">Departure time</label>
                     <input type="time" id="departure_time" name="departure_time" value="08:00">
-                    <p class="input_hint">Used to check train departures after an estimated car connection.</p>
+                    <label class="checkbox_option" for="respect_departure_time">
+                        <input type="checkbox" id="respect_departure_time" name="respect_departure_time" checked>
+                        <span>Match connections to this departure time</span>
+                    </label>
+                    <p class="input_hint">Turn this off to compare the best available options across the selected day.</p>
                 </div>
 
             </div>

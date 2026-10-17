@@ -221,6 +221,20 @@ The application will rely on external data sources and APIs for information such
 
 The exact providers will be evaluated during the initial research phase.
 
+### Flight Data Levels
+
+Travelpayouts provides cached price references. These are useful to compare a
+route, but may contain only the total journey duration and number of stops. A
+cached reference must never be presented as a live or bookable offer.
+
+For a complete flight itinerary, TRO supports an optional Duffel integration.
+When `DUFFEL_ACCESS_TOKEN` is configured on the backend, live EUR offers are
+queried first and the interface can show every flight segment, airline,
+departure and arrival airport, scheduled times, and each layover duration.
+Live offers expire quickly and are therefore not stored in the 24-hour flight
+reference cache. Without this optional credential, TRO transparently falls
+back to Travelpayouts and labels any unavailable layover detail.
+
 ### Database
 
 The development version uses SQLite to cache approved city infrastructure and avoid unnecessary external API calls.
@@ -232,6 +246,36 @@ The database may be expanded in the future for:
 * User accounts
 * Travel history
 * Machine learning datasets
+
+### Local database inspection and analysis
+
+The development database is the local SQLite file `data/tro.db`, mounted into
+the backend container. It is useful to inspect the cache and flight data
+directly, but the public API does not expose a database administration route:
+that would be unsafe without user authentication.
+
+Run the read-only terminal inspector while Docker is running:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\inspect_database.py
+.\.venv\Scripts\python.exe .\scripts\inspect_database.py --table scheduled_flights --limit 20
+.\.venv\Scripts\python.exe .\scripts\inspect_database.py --table flight_price_observations
+```
+
+For reproducible pandas reports, run:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\analyze_flights.py
+```
+
+This writes `scheduled_flights_summary.csv` and
+`flight_price_observations_summary.csv` under `data/analysis/`. These are
+derived reports: they never modify route caches or API data.
+
+For a visual table editor, install **DB Browser for SQLite** and open
+`data/tro.db` in read-only mode while TRO is running. Before manually editing
+data, stop the backend container and make a copy of the database file. Direct
+editing during active searches can create locks or invalidate cached results.
 
 ### Optimization
 
@@ -263,13 +307,78 @@ TRO can optionally use the Travelpayouts Aviasales Data API to add flight edges 
 2. Set `TRAVELPAYOUTS_API_TOKEN` to the private token from the Travelpayouts profile.
 3. Keep `.env` private. It is ignored by Git and must never be committed.
 
-The endpoint provides cached reference prices, not live bookable offers. TRO first checks the date-specific reference endpoint and, if it has no result, checks the calendar cache for the exact requested date before using the older cheapest-price fallback. TRO labels these prices accordingly and currently estimates flight duration from the airport distance. No booking link is created by this integration.
+The endpoint provides cached reference prices, not live bookable offers. TRO first checks the date-specific reference endpoint and, if it has no result, checks the calendar cache for the exact requested date before using the older cheapest-price fallback. TRO labels these prices accordingly and uses the itinerary duration when the date-specific response supplies it; older cached responses retain a clearly labelled distance-based duration estimate. No booking link is created by this integration.
+
+The cached reference can report a departure timestamp and a number of stops, but it does not provide the airport and waiting time for every layover. TRO therefore never invents those details. A future detailed-itinerary flight provider will model each flight leg and airport transfer separately in the graph.
+
+Travelpayouts documents `duration` in minutes, including waiting time. TRO still validates obvious contradictions in cached data: a zero-stop reference whose reported duration is far above a geographic direct-flight estimate is relabelled as an estimate instead of being treated as a trustworthy itinerary duration. The raw provider duration remains visible in the response for diagnostics.
+
+### Flight-reference cache
+
+TRO keeps a separate 24-hour database cache for a successful flight reference, keyed by origin IATA code, destination IATA code, and travel date. A cache is a temporary stored copy: it reduces repeated provider calls and lets the graph remain available if Travelpayouts later returns an empty response or has a short outage. A current provider response always replaces the stored copy. When TRO uses the stored copy, the response and frontend label it as a **stored reference**, show when it was saved, and still require confirmation before booking. The cache never claims that an old price is a live fare.
 
 Airport discovery first reads IATA/ICAO codes from OpenStreetMap. If an Overpass outage requires the Nominatim airport fallback, TRO also attempts a public Wikidata lookup using the airport's Wikidata identifier. An airport node without an IATA code remains visible in the graph, but cannot be used for a Travelpayouts airport-pair search; the API reports that limitation explicitly.
 
 Airport selection is city-agnostic: TRO ranks commercial candidates inside the configured 50 km radius by city-name relevance, passenger-service signals, IATA availability, and distance. It returns at most two principal candidates. If an airport's name does not contain the city name, a nearby commercial candidate can still be selected instead of being lost to a fragile name-only rule.
 
 TRO also makes one bounded comparison pass for departure-airport gateways. It checks up to three nearby IATA-tagged commercial airports within a 220 km discovery radius and keeps only gateways reachable in at most three hours by the current car estimate. This makes routes such as `car -> Memmingen Airport -> flight` possible and lets their total cost compete with a direct departure from Nürnberg, without querying every airport in Germany. It does not assume a rental car after landing.
+
+Selected gateway airports are also cached for 30 days per origin city. This is separate from the 24-hour flight-reference cache: airport candidates such as Frankfurt Airport remain available as graph nodes and car-access edges if the public geographic lookup later has a temporary empty response. A complete `car -> airport -> flight` route still requires a priced flight edge to the destination.
+
+### Published flight schedules and price estimates
+
+TRO can also store **published flight schedules** separately from flight prices.
+An airport schedule (for example, a permitted export from Nürnberg Airport) tells
+the graph that a flight is planned, with its airline, flight number, origin,
+destination, and times. It does **not** prove that a seat is available or give a
+current price. TRO therefore never labels an imported schedule as a bookable
+offer.
+
+Use only an official export or data that the source permits TRO to reuse. Do not
+scrape airport, airline, or affiliate webpages. The local importer expects one
+actual service date per CSV row; a documented template is available at
+`scripts/flight_schedule_template.csv`.
+
+```powershell
+# Local Python installation
+.\.venv\Scripts\python.exe .\scripts\import_flight_schedules.py .\my-nuremberg-export.csv
+
+# Or, after rebuilding the Docker image, using a CSV stored under ./data
+docker compose exec backend python scripts/import_flight_schedules.py /app/data/my-nuremberg-export.csv
+```
+
+The importer creates `scheduled_flights` records and updates an existing row
+when the same sourced flight movement is imported again. This is intentionally
+not yet a live-price system. Each successful Travelpayouts flight reference is
+also recorded in `flight_price_observations` with its observed date, flight
+date, route, duration, and stop count. Those observations will allow the next
+graph stage to display a clearly marked historical price range (low / typical /
+high and confidence) for a scheduled flight instead of inventing a live fare.
+No price is required when adding a schedule.
+
+### AeroDataBox scheduled-flight refresh
+
+When `AERODATABOX_RAPIDAPI_KEY` is set in the private `.env` file, TRO uses
+the AeroDataBox FIDS endpoint to refresh published departures for the selected
+origin airport and date. It sends two 12-hour requests only when that
+airport/day is absent or older than seven days in the local cache. A successful
+empty result is cached too, so repeated searches do not consume API quota when
+there is no direct departure to the selected destination airport.
+
+The service stores only matching direct passenger departures and creates a
+flight graph edge with its airline, flight number, airport pair, scheduled
+departure and scheduled arrival. The free AeroDataBox plan requires
+attribution, which the frontend displays whenever schedule data is used.
+
+Schedule data is not a ticket offer. TRO first uses a historical
+Travelpayouts-derived price range when one exists for the airport pair; if it
+does not, it uses a clearly marked low-confidence route-length estimate. The
+user must still confirm availability and price elsewhere.
+
+The first version intentionally models direct scheduled flights. Building a
+multi-flight itinerary with an intermediate airport is the next graph stage:
+it requires loading eligible onward departures at that airport and checking a
+safe transfer time before creating separate connected flight edges.
 
 When running the backend with Docker, pass the environment file explicitly because Docker does not copy `.env` into the image:
 
@@ -285,7 +394,7 @@ TRO uses the free **GTFS Regional Rail Germany** dataset with a local OpenTripPl
 
 When the traveller confirms that they already have a Deutschlandticket, TRO adds regional itineraries as `train_connection` graph edges with a zero marginal ticket cost. The planned times, operators, internal transfers, and the scheduled waiting time at every train-to-train transfer are retained in the edge metadata. The planner accepts the complete locally filtered regional feed, including regional operator labels that are not simply RB or RE, while still rejecting clear long-distance services. This zero cost does not mean a Deutschlandticket can be purchased for free.
 
-The search also accepts a local `departure_time` (`HH:MM`, Europe/Berlin). Direct car estimates and car access to a nearby gateway station receive planned departure and arrival times. A gateway train search begins only after the estimated drive plus a ten-minute parking/platform buffer, so an earlier train cannot be proposed after driving to that station.
+The search accepts a local `departure_time` (`HH:MM`, Europe/Berlin) and enables schedule matching by default. Direct car estimates and car access to nearby gateways receive planned departure and arrival times. A gateway train search begins only after the estimated drive plus a ten-minute parking/platform buffer. A car-to-flight path also requires a 90-minute airport-arrival buffer, and a cached flight without a departure timestamp cannot be joined to a preceding car leg. Set `respect_departure_time` to `false` to compare available options across the selected day instead; the selected start time then does not eliminate a route, and regional rail is queried across a 24-hour window.
 
 ## Commercial Rail and Omio
 

@@ -15,6 +15,7 @@ class GraphPolicy(BaseModel):
     max_edge_hops: int = Field(default=12, ge=1, le=30)
     max_car_access_minutes: int = Field(default=90, ge=15, le=180)
     max_airport_access_minutes: int = Field(default=180, ge=30, le=300)
+    airport_arrival_buffer_minutes: int = Field(default=90, ge=30, le=240)
     estimated_car_speed_kmh: float = Field(default=70.0, gt=0)
     estimated_road_distance_factor: float = Field(default=1.25, ge=1.0, le=2.0)
     estimated_car_cost_per_hour_eur: float = Field(default=12.0, ge=0)

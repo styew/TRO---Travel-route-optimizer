@@ -1,0 +1,2 @@
+service_date,flight_number,origin_iata,destination_iata,planned_departure,planned_arrival,airline_code,airline_name,source,source_url,source_updated_at
+2026-10-16,XX123,NUE,BER,2026-10-16T08:15:00+02:00,2026-10-16T09:25:00+02:00,XX,Example Airline,Official airport schedule export,https://example.invalid/schedule,2026-10-01T12:00:00+00:00
