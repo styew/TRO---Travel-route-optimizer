@@ -30,6 +30,17 @@ function formatFlightDeparture(timestamp) {
         : "Schedule unavailable in cached reference";
 }
 
+/** Present a stored flight reference timestamp without implying it is a live fare. */
+function formatReferenceSavedAt(timestamp) {
+    if (!timestamp) return "Unknown";
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return "Unknown";
+    return new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Europe/Berlin", day: "2-digit", month: "2-digit",
+        year: "numeric", hour: "2-digit", minute: "2-digit",
+    }).format(date);
+}
+
 /** Convert a route duration into a compact summary suitable for an itinerary header. */
 function formatDuration(minutes) {
     const hours = Math.floor(minutes / 60);
@@ -53,6 +64,7 @@ function describeRouteSegment(segment, nodeNames) {
     const destinationName = nodeNames.get(segment.destination_node_id) || "Destination";
     if (segment.edge_type === "direct_car") return `Car directly: ${originName} → ${destinationName}`;
     if (segment.edge_type === "car_access_to_station") return `Car to station: ${originName} → ${destinationName}`;
+    if (segment.edge_type === "car_access_to_airport") return `Car to airport: ${originName} → ${destinationName}`;
     if (segment.mode === "train") {
         const lines = (segment.metadata.legs || []).map((leg) => leg.line).filter(Boolean).join(" → ");
         return `Train: ${lines || `${originName} → ${destinationName}`}`;
@@ -104,7 +116,52 @@ function createTrainTimeline(edge) {
     return timeline;
 }
 
-/** Show the available graph connections, including every cached flight reference. */
+/** Render live flight segments and their exact airport connection waits. */
+function createFlightTimeline(edge) {
+    const timeline = document.createElement("div");
+    timeline.className = "flight_timeline";
+    const legs = edge.metadata.flight_legs || [];
+    const transfers = edge.metadata.transfer_waits || [];
+    legs.forEach((leg, index) => {
+        const legCard = document.createElement("article");
+        legCard.className = "flight_leg_card";
+        const flight = document.createElement("strong");
+        flight.className = "flight_number";
+        flight.textContent = leg.flight_number || "Flight number unavailable";
+        const route = document.createElement("span");
+        route.className = "flight_route";
+        route.textContent = `${leg.from || leg.from_iata || "Origin"} (${leg.from_iata || "—"}) → ${leg.to || leg.to_iata || "Destination"} (${leg.to_iata || "—"})`;
+        const times = document.createElement("span");
+        times.className = "flight_times";
+        times.textContent = `${formatJourneyTime(leg.scheduled_departure)} – ${formatJourneyTime(leg.scheduled_arrival)} · ${Number.isInteger(leg.duration_minutes) ? formatDuration(leg.duration_minutes) : "Duration unavailable"}`;
+        legCard.append(flight, route, times);
+        if (leg.airline) {
+            const airline = document.createElement("span");
+            airline.className = "flight_airline";
+            airline.textContent = leg.airline;
+            legCard.appendChild(airline);
+        }
+        timeline.appendChild(legCard);
+
+        const transfer = transfers[index];
+        if (transfer) {
+            const transferCard = document.createElement("div");
+            transferCard.className = "flight_transfer_card";
+            const heading = document.createElement("strong");
+            const wait = Number.isInteger(transfer.wait_minutes)
+                ? `${formatDuration(transfer.wait_minutes)} connection`
+                : "Connection time unavailable";
+            heading.textContent = `${wait} · ${transfer.at_airport || transfer.at_airport_iata || "Connection airport"} (${transfer.at_airport_iata || "—"})`;
+            const detail = document.createElement("span");
+            detail.textContent = `${formatJourneyTime(transfer.scheduled_arrival)} arrival → ${formatJourneyTime(transfer.scheduled_departure)} next departure`;
+            transferCard.append(heading, detail);
+            timeline.appendChild(transferCard);
+        }
+    });
+    return timeline;
+}
+
+/** Show the available graph connections, separating published schedules from price references. */
 function showSearchResult(data, basicFilters) {
     const flightEdges = data.graph.edges.filter((edge) => edge.edge_type === "flight_connection");
     const carEdges = data.graph.edges.filter((edge) => edge.mode === "car");
@@ -113,6 +170,7 @@ function showSearchResult(data, basicFilters) {
     const commercialTrainWarning = (data.warnings || []).find((warning) => warning.infrastructure_type === "commercial_trains");
     const flightWarning = (data.warnings || []).find((warning) => warning.infrastructure_type === "flights");
     const airportGatewayWarning = (data.warnings || []).find((warning) => warning.infrastructure_type === "airport_gateways");
+    const scheduledFlightEdges = flightEdges.filter((edge) => edge.metadata.schedule_source);
     const card = document.createElement("div");
     card.className = "result_card";
     const title = document.createElement("h2");
@@ -125,15 +183,18 @@ function showSearchResult(data, basicFilters) {
         ? ` Train changes require at least ${basicFilters.minimumTrainTransferMinutes} minutes.`
         : "";
     filterNotice.className = "filter_notice";
-    filterNotice.textContent = `Filters selected: ${basicFilters.travellers} traveller(s); the traveller ${ticketStatus}; maximum ${data.graph.policy.max_transport_categories} transport categories. Repeated train legs count as one category.${transferRule}`;
+    const timeRule = basicFilters.respectDepartureTime
+        ? ` Connections must be reachable after the selected departure time; car → flight includes a ${data.graph.policy.airport_arrival_buffer_minutes}-minute airport buffer.`
+        : " Best available options are compared across the selected day; the departure time does not remove a connection.";
+    filterNotice.textContent = `Filters selected: ${basicFilters.travellers} traveller(s); the traveller ${ticketStatus}; maximum ${data.graph.policy.max_transport_categories} transport categories. Repeated train legs count as one category.${transferRule}${timeRule}`;
     card.append(title, summary, filterNotice);
 
     const flightDetails = document.createElement("details");
     flightDetails.className = "connection_details";
     const flightSummary = document.createElement("summary");
     flightSummary.textContent = flightEdges.length
-        ? `${flightEdges.length} cached flight reference(s) found`
-        : "No cached flight reference was found for this date";
+        ? `${scheduledFlightEdges.length} published schedule(s) and ${flightEdges.length - scheduledFlightEdges.length} flight reference(s) found`
+        : "No published flight schedule or cached flight reference was found for this date";
     flightDetails.appendChild(flightSummary);
     if (flightEdges.length) {
         const flights = document.createElement("div");
@@ -143,20 +204,46 @@ function showSearchResult(data, basicFilters) {
             flightCard.className = "flight_route_card";
             const flightSummary = document.createElement("summary");
             const flight = edge.metadata.flight_number || "Flight number unavailable";
-            flightSummary.textContent = `${edge.metadata.origin_iata} → ${edge.metadata.destination_iata} · ${flight} · €${edge.estimated_price_eur} reference price`;
+            const isPublishedSchedule = Boolean(edge.metadata.schedule_source);
+            const priceLabel = edge.metadata.price_status === "historic_estimate"
+                ? "historic estimate"
+                : edge.metadata.price_status === "model_estimate"
+                    ? "route estimate"
+                    : "reference price";
+            flightSummary.textContent = `${edge.metadata.origin_iata} → ${edge.metadata.destination_iata} · ${flight} · ${formatEuro(edge.estimated_price_eur)} ${priceLabel}${isPublishedSchedule ? " · published schedule" : ""}`;
             const details = document.createElement("div");
             details.className = "flight_route_details";
             const durationLabel = edge.metadata.duration_status === "Travelpayouts itinerary duration"
                 ? `${edge.estimated_duration_minutes} min`
                 : `${edge.estimated_duration_minutes} min estimated`;
+            const isStoredReference = edge.metadata.price_status === "stored_reference_fallback";
+            const hasDetailedItinerary = Array.isArray(edge.metadata.flight_legs)
+                && edge.metadata.flight_legs.length > 0;
+            const durationWarning = edge.metadata.duration_status === "Provider duration rejected as inconsistent with zero stops"
+                ? `The provider reported ${edge.metadata.provider_duration_minutes} minutes with zero stops. TRO rejected that inconsistent duration and shows a geographic estimate instead.`
+                : null;
             const fields = [
-                ["Airline code", edge.metadata.airline || "Unavailable"],
+                ["Airline", edge.metadata.airline || "Unavailable"],
                 ["Flight number", flight],
-                ["Departure", formatFlightDeparture(edge.metadata.departure_at)],
+                ["Departure", formatFlightDeparture(edge.metadata.planned_departure || edge.metadata.departure_at)],
+                [isPublishedSchedule ? "Scheduled arrival" : "Estimated itinerary arrival", edge.metadata.planned_arrival
+                    ? formatJourneyTime(edge.metadata.planned_arrival)
+                    : "Unavailable in cached reference"],
                 ["Flight duration", durationLabel],
+                ...(durationWarning ? [["Duration check", durationWarning]] : []),
                 ["Stops", Number.isInteger(edge.metadata.transfers) ? edge.metadata.transfers : "Unavailable"],
+                ["Connection detail", hasDetailedItinerary
+                    ? "Exact segments and connection times are shown below."
+                    : Number.isInteger(edge.metadata.transfers) && edge.metadata.transfers > 0
+                        ? "The cached reference reports the number of stops, but not the layover airports or waiting times."
+                        : "No layover details were supplied by this cached reference."],
                 ["Distance", `${edge.estimated_distance_km} km`],
-                ["Price status", "Cached reference — confirm before booking"],
+                ["Price status", isStoredReference
+                    ? `Stored reference from ${formatReferenceSavedAt(edge.metadata.cache_fetched_at)} — confirm before booking`
+                    : isPublishedSchedule
+                        ? `${priceLabel}; the schedule does not confirm ticket availability.`
+                        : "Cached provider reference — confirm before booking"],
+                ...(isPublishedSchedule ? [["Schedule source", edge.metadata.schedule_source]] : []),
             ];
             fields.forEach(([label, value]) => {
                 const field = document.createElement("p");
@@ -165,6 +252,9 @@ function showSearchResult(data, basicFilters) {
                 field.append(labelElement, value);
                 details.appendChild(field);
             });
+            if (hasDetailedItinerary) {
+                details.appendChild(createFlightTimeline(edge));
+            }
             if (edge.booking_url) {
                 const bookingLink = document.createElement("a");
                 bookingLink.className = "flight_booking_link";
@@ -178,6 +268,18 @@ function showSearchResult(data, basicFilters) {
             flights.appendChild(flightCard);
         });
         flightDetails.appendChild(flights);
+        if (scheduledFlightEdges.length) {
+            const attribution = document.createElement("p");
+            attribution.className = "data_attribution";
+            const label = document.createTextNode("Published flight schedule data powered by ");
+            const link = document.createElement("a");
+            link.href = "https://aerodatabox.com/";
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            link.textContent = "AeroDataBox";
+            attribution.append(label, link, document.createTextNode(". Prices are TRO estimates, not live fares."));
+            flightDetails.appendChild(attribution);
+        }
     } else {
         const explanation = document.createElement("p");
         explanation.textContent = [
@@ -218,12 +320,49 @@ function showSearchResult(data, basicFilters) {
             const stats = document.createElement("p");
             const departure = route.planned_departure ? formatJourneyTime(route.planned_departure) : "Not scheduled";
             const arrival = route.planned_arrival ? formatJourneyTime(route.planned_arrival) : "Not scheduled";
-            stats.textContent = `${departure} → ${arrival} · ${route.transfer_count} transfer(s) · ${route.total_estimated_distance_km} km`;
+            const flightStops = route.segments.reduce(
+                (total, segment) => total + (segment.mode === "flight" && Number.isInteger(segment.metadata.transfers)
+                    ? segment.metadata.transfers : 0),
+                0,
+            );
+            const trainChanges = route.segments.reduce(
+                (total, segment) => total + (segment.mode === "train" && Number.isInteger(segment.metadata.transfer_count)
+                    ? segment.metadata.transfer_count : 0),
+                0,
+            );
+            const connectionLabels = [
+                `${route.transport_category_changes} transport mode change(s)`,
+                ...(flightStops ? [`${flightStops} flight stop(s)`] : []),
+                ...(trainChanges ? [`${trainChanges} train change(s)`] : []),
+            ];
+            stats.textContent = `${departure} → ${arrival} · ${connectionLabels.join(" · ")} · ${route.total_estimated_distance_km} km`;
             const segments = document.createElement("ol");
-            route.segments.forEach((segment) => {
+            route.segments.forEach((segment, index) => {
                 const item = document.createElement("li");
-                item.textContent = `${describeRouteSegment(segment, nodeNames)} · ${formatDuration(segment.estimated_duration_minutes)} · ${formatEuro(segment.estimated_price_eur)}`;
+                const segmentTitle = document.createElement("strong");
+                segmentTitle.textContent = `${describeRouteSegment(segment, nodeNames)} · ${formatDuration(segment.estimated_duration_minutes)} · ${formatEuro(segment.estimated_price_eur)}`;
+                const segmentTiming = document.createElement("span");
+                const segmentDeparture = segment.metadata.planned_departure;
+                const segmentArrival = segment.metadata.planned_arrival;
+                segmentTiming.textContent = segmentDeparture && segmentArrival
+                    ? `${formatJourneyTime(segmentDeparture)} → ${formatJourneyTime(segmentArrival)}`
+                    : "Schedule unavailable for this segment";
+                item.append(segmentTitle, document.createElement("br"), segmentTiming);
+                if (segment.mode === "flight" && Array.isArray(segment.metadata.flight_legs) && segment.metadata.flight_legs.length) {
+                    item.appendChild(createFlightTimeline(segment));
+                }
                 segments.appendChild(item);
+                const nextSegment = route.segments[index + 1];
+                if (segment.edge_type === "car_access_to_airport" && nextSegment?.mode === "flight") {
+                    const bufferItem = document.createElement("li");
+                    bufferItem.className = "connection_buffer";
+                    const buffer = segment.metadata.airport_arrival_buffer_minutes || data.graph.policy.airport_arrival_buffer_minutes;
+                    const flightDeparture = nextSegment.metadata.planned_departure
+                        ? formatJourneyTime(nextSegment.metadata.planned_departure)
+                        : "the flight departure";
+                    bufferItem.textContent = `Airport arrival buffer · ${buffer} min for check-in and security before ${flightDeparture}`;
+                    segments.appendChild(bufferItem);
+                }
             });
             optionBody.append(stats, segments);
             routeCard.append(optionSummary, optionBody);
@@ -407,12 +546,13 @@ searchButton.addEventListener("click", async () => {
         travellers: Number(document.getElementById("travellers").value),
         maxTransportCategories: Number(document.getElementById("max_transport_categories").value),
         minimumTrainTransferMinutes: Number(document.getElementById("minimum_train_transfer_minutes").value),
+        respectDepartureTime: document.getElementById("respect_departure_time").checked,
     };
     if (!origin || !destination || !date || !departureTime) return showMessage("Enter origin, destination, date, and departure time before searching.", true);
     searchButton.disabled = true;
     searchButton.textContent = "Building graph…";
     try {
-        const response = await fetch("http://localhost:8000/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ origin, destination, date, departure_time: departureTime, has_deutschlandticket: basicFilters.hasDeutschlandticket, travellers: basicFilters.travellers, max_transport_categories: basicFilters.maxTransportCategories, minimum_train_transfer_minutes: basicFilters.minimumTrainTransferMinutes }) });
+        const response = await fetch("http://localhost:8000/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ origin, destination, date, departure_time: departureTime, respect_departure_time: basicFilters.respectDepartureTime, has_deutschlandticket: basicFilters.hasDeutschlandticket, travellers: basicFilters.travellers, max_transport_categories: basicFilters.maxTransportCategories, minimum_train_transfer_minutes: basicFilters.minimumTrainTransferMinutes }) });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || "The graph could not be created.");
         latestGraph = data.graph;

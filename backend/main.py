@@ -22,9 +22,9 @@ app = FastAPI(
     version="0.1.0",
     description=(
         "The Travel Route Optimizer API discovers city transport nodes and "
-        "assembles an initial route graph. It currently offers estimated car "
-        "edges; train and flight edges will be added once their timetable and "
-        "price providers are integrated."
+        "assembles a multimodal route graph. It combines estimated car edges, "
+        "regional train schedules, published flight schedules, and clearly "
+        "labelled flight-price estimates where data is available."
     ),
     lifespan=lifespan,
 )

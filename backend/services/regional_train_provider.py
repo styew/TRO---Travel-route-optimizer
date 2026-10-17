@@ -83,16 +83,17 @@ class OpenTripPlannerRegionalTrainProvider:
             return False
         return not bool(_LONG_DISTANCE_LINE_PATTERN.match(line))
 
-    async def find_d_ticket_edges(self, origin: TransportNode, destination: TransportNode, travel_date: str, departure_at: datetime, minimum_transfer_minutes: int) -> list[TravelEdge]:
-        """Return regional itineraries as zero-marginal-cost D-Ticket graph edges."""
+    async def find_d_ticket_edges(self, origin: TransportNode, destination: TransportNode, travel_date: str, departure_at: datetime, minimum_transfer_minutes: int, search_entire_day: bool = False) -> list[TravelEdge]:
+        """Return regional itineraries for the start time or the selected calendar day."""
         if origin.type != "train_station" or destination.type != "train_station":
             return []
         origin_location = await self._planner_stop_location(origin)
         destination_location = await self._planner_stop_location(destination)
+        search_window = "PT24H" if search_entire_day else "PT12H"
         query = """
         query RegionalRail($origin: PlanLabeledLocationInput!, $destination: PlanLabeledLocationInput!, $dateTime: PlanDateTimeInput!, $preferences: PlanPreferencesInput) {
           planConnection(origin: $origin, destination: $destination, dateTime: $dateTime, first: 50,
-            searchWindow: "PT12H", preferences: $preferences,
+            searchWindow: "$SEARCH_WINDOW", preferences: $preferences,
             modes: { transitOnly: true, transit: { transit: [{ mode: RAIL }] } }) {
             edges { node { start end duration numberOfTransfers legs {
               mode transitLeg distance
@@ -103,7 +104,7 @@ class OpenTripPlannerRegionalTrainProvider:
             routingErrors { description }
           }
         }
-        """
+        """.replace("$SEARCH_WINDOW", search_window)
         variables = {
             "origin": {"label": origin.name, "location": origin_location},
             "destination": {"label": destination.name, "location": destination_location},
@@ -186,8 +187,8 @@ class OpenTripPlannerRegionalTrainProvider:
         return edges
 
 
-async def discover_regional_train_edges(origin_nodes: list[TransportNode], destination_nodes: list[TransportNode], travel_date: str, departure_time: str, has_deutschlandticket: bool, gateway_departures: dict[str, datetime] | None = None, minimum_transfer_minutes: int = 0) -> tuple[list[TravelEdge], list[dict[str, str]]]:
-    """Discover D-Ticket routes only when the traveller confirms ticket ownership."""
+async def discover_regional_train_edges(origin_nodes: list[TransportNode], destination_nodes: list[TransportNode], travel_date: str, departure_time: str, has_deutschlandticket: bool, gateway_departures: dict[str, datetime] | None = None, minimum_transfer_minutes: int = 0, search_entire_day: bool = False) -> tuple[list[TravelEdge], list[dict[str, str]]]:
+    """Discover D-Ticket routes from the chosen start or across the travel day."""
     if not has_deutschlandticket:
         return [], []
     provider = OpenTripPlannerRegionalTrainProvider()
@@ -212,11 +213,13 @@ async def discover_regional_train_edges(origin_nodes: list[TransportNode], desti
         for destination_station in destination_stations:
             try:
                 station_departure = (gateway_departures or {}).get(origin_station.id, default_departure)
-                # OTP receives both the requested transfer buffer and a twelve-hour
-                # search window, so it can construct comfortable later departures.
+                # The day-wide mode begins at midnight and asks OTP for the
+                # selected day's connections; timed mode preserves the user's start.
+                if search_entire_day:
+                    station_departure = station_departure.replace(hour=0, minute=0)
                 edges.extend(await provider.find_d_ticket_edges(
                     origin_station, destination_station, travel_date,
-                    station_departure, minimum_transfer_minutes,
+                    station_departure, minimum_transfer_minutes, search_entire_day,
                 ))
             except RegionalTrainProviderUnavailableError:
                 return [], [{"infrastructure_type": "regional_trains", "message": "The regional-train planner is not available yet; D-Ticket routes could not be added."}]
