@@ -36,6 +36,7 @@ from backend.services.infra import (
 from backend.services.node_factory import create_city_transport_nodes
 from backend.services.nominatim_infrastructure import discover_terminal_fallback
 from backend.services.regional_train_provider import discover_regional_train_edges
+from backend.services.long_distance_train_provider import discover_long_distance_train_edges
 from backend.services.route_planner import find_lowest_price_routes
 
 logger = logging.getLogger(__name__)
@@ -141,11 +142,16 @@ async def search(request: SearchRequest):
         )
         for gateway in gateway_nodes
     }
-    flight_result, d_ticket_result, commercial_train_result = await asyncio.gather(
+    flight_result, d_ticket_result, long_distance_train_result, commercial_train_result = await asyncio.gather(
         discover_flight_edges(origin_nodes, destination_nodes, request.date, request.travellers),
         discover_regional_train_edges(
             origin_nodes + gateway_nodes, destination_nodes, request.date,
             train_search_time, request.has_deutschlandticket, gateway_departures,
+            request.minimum_train_transfer_minutes, not request.respect_departure_time,
+        ),
+        discover_long_distance_train_edges(
+            origin_nodes + gateway_nodes, destination_nodes, request.date,
+            train_search_time, request.travellers, gateway_departures,
             request.minimum_train_transfer_minutes, not request.respect_departure_time,
         ),
         discover_commercial_train_edges(
@@ -155,6 +161,7 @@ async def search(request: SearchRequest):
     )
     flight_edges, flight_warnings = flight_result
     train_edges, train_warnings = d_ticket_result
+    long_distance_train_edges, long_distance_train_warnings = long_distance_train_result
     commercial_train_edges, commercial_train_warnings = commercial_train_result
     scheduled_flight_edges, schedule_warnings = await discover_scheduled_flight_edges(
         origin_nodes, destination_nodes, request.date
@@ -238,7 +245,7 @@ async def search(request: SearchRequest):
         destination_nodes,
         gateway_nodes,
         gateway_airports=gateway_airport_nodes,
-        additional_edges=flight_edges + train_edges + commercial_train_edges,
+        additional_edges=flight_edges + train_edges + long_distance_train_edges + commercial_train_edges,
         policy=graph_policy,
         departure_at=journey_departure,
     )
@@ -246,7 +253,7 @@ async def search(request: SearchRequest):
         graph, respect_departure_time=request.respect_departure_time
     )
     response = {"origin": origin_data, "destination": destination_data, "origin_infrastructure": origin_infrastructure, "destination_infrastructure": destination_infrastructure, "origin_nodes": origin_nodes, "destination_nodes": destination_nodes, "graph": graph, "route_plan": route_plan, "cache": {"origin_hit": origin_cache_hit, "destination_hit": destination_cache_hit}}
-    warnings = origin_warnings + destination_warnings + graph_warnings + flight_warnings + schedule_warnings + train_warnings + commercial_train_warnings
+    warnings = origin_warnings + destination_warnings + graph_warnings + flight_warnings + schedule_warnings + train_warnings + long_distance_train_warnings + commercial_train_warnings
     if warnings:
         response["warnings"] = warnings
     if request.debug:
@@ -265,6 +272,12 @@ async def search(request: SearchRequest):
                 "destination_station_nodes": [node.name for node in destination_nodes if node.type == "train_station"],
                 "minimum_transfer_minutes": request.minimum_train_transfer_minutes,
                 "search_entire_day": not request.respect_departure_time,
+            },
+            "long_distance_train_search": {
+                "origin_station_nodes": [node.name for node in origin_nodes + gateway_nodes if node.type == "train_station"],
+                "destination_station_nodes": [node.name for node in destination_nodes if node.type == "train_station"],
+                "edge_count": len(long_distance_train_edges),
+                "price_note": "Fares are local statistical estimates, not live offers.",
             },
         }
     return response

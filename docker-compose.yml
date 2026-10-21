@@ -6,6 +6,7 @@ services:
     environment:
       DATABASE_URL: sqlite:////app/data/tro.db
       OTP_GTFS_URL: http://otp:8080/otp/gtfs/v1
+      OTP_LONG_DISTANCE_URL: http://otp-long-distance:8080/otp/gtfs/v1
     ports:
       - "8000:8000"
     volumes:
@@ -13,6 +14,8 @@ services:
       - ./otp-data:/app/otp-data:ro
     depends_on:
       otp:
+        condition: service_started
+      otp-long-distance:
         condition: service_started
 
   otp:
@@ -30,3 +33,41 @@ services:
     command: ["--build", "--save"]
     volumes:
       - ./otp-data/d-ticket:/var/opentripplanner
+
+  # This graph is intentionally separate from the D-Ticket graph. It holds
+  # paid German long-distance services and can later receive price estimates.
+  otp-long-distance:
+    image: docker.io/opentripplanner/opentripplanner:latest
+    container_name: tro-otp-long-distance
+    command: ["--load", "--serve"]
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./otp-data/long-distance:/var/opentripplanner
+
+  otp-long-distance-build:
+    image: docker.io/opentripplanner/opentripplanner:latest
+    profiles: ["long-distance-build"]
+    command: ["--build", "--save"]
+    volumes:
+      - ./otp-data/long-distance:/var/opentripplanner
+
+  # The optional Europe graph receives one filtered GTFS archive per country.
+  # It is kept outside the default stack until cross-border station transfers
+  # have been explicitly validated.
+  otp-europe:
+    image: docker.io/opentripplanner/opentripplanner:latest
+    profiles: ["europe"]
+    container_name: tro-otp-europe
+    command: ["--load", "--serve"]
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./otp-data/europe/rail:/var/opentripplanner
+
+  otp-europe-build:
+    image: docker.io/opentripplanner/opentripplanner:latest
+    profiles: ["europe-build"]
+    command: ["--build", "--save"]
+    volumes:
+      - ./otp-data/europe/rail:/var/opentripplanner

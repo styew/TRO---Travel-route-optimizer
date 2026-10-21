@@ -9,7 +9,7 @@ import unicodedata
 import zipfile
 from functools import lru_cache
 
-GTFS_ARCHIVE_PATH = os.getenv(
+REGIONAL_GTFS_ARCHIVE_PATH = os.getenv(
     "REGIONAL_GTFS_ARCHIVE_PATH", "/app/otp-data/regional-rail-gtfs.zip"
 )
 _IGNORED_CITY_WORDS = {"am", "an", "der", "im", "in", "s", "u"}
@@ -45,13 +45,20 @@ def _parent_stations(archive_path: str) -> tuple[dict, ...]:
         raise RuntimeError("The regional GTFS archive is not available.") from error
 
 
-def find_gtfs_station_id(name: str, latitude: float, longitude: float) -> str | None:
-    """Return the best parent station, ignoring access suffixes such as 'Südseite'."""
+def find_gtfs_station_id(
+    name: str, latitude: float, longitude: float, archive_path: str | None = None
+) -> str | None:
+    """Return the best GTFS parent station from the requested feed archive.
+
+    The optional archive keeps the regional and long-distance datasets separate:
+    a valid station identifier from one OpenTripPlanner graph cannot be used in
+    the other graph.
+    """
     requested_words = _words(name)
     if not requested_words:
         return None
     matches: list[tuple[float, str]] = []
-    for station in _parent_stations(GTFS_ARCHIVE_PATH):
+    for station in _parent_stations(archive_path or REGIONAL_GTFS_ARCHIVE_PATH):
         station_words = _words(station.get("stop_name", ""))
         shared_words = requested_words & station_words
         requires_main_station = "hauptbahnhof" in requested_words
