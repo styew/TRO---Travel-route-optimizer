@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.routes.health import router as health_router
+from backend.api.routes.rail_price import router as rail_price_router
 from backend.api.routes.search import router as search_router
 from backend.database.session import initialize_database
 
@@ -38,4 +39,5 @@ app.add_middleware(
 )
 
 app.include_router(health_router)
+app.include_router(rail_price_router)
 app.include_router(search_router)

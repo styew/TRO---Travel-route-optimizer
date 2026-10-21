@@ -8,6 +8,7 @@ mode, so it is safe to run while the backend container is serving searches.
 import argparse
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 
@@ -63,6 +64,10 @@ def _show_table(connection: sqlite3.Connection, table: str, limit: int) -> None:
 
 def main() -> None:
     """Parse a small inspection request and keep all database operations read-only."""
+    # Windows PowerShell can use a legacy console codec.  Replacing only
+    # unsupported display characters keeps inspection read-only and reliable.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
     parser = argparse.ArgumentParser(description="Inspect the local TRO SQLite database safely.")
     parser.add_argument("--database", type=Path, default=Path("data/tro.db"))
     parser.add_argument("--table", help="Optional table name to display after the summary.")

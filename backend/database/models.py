@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, JSON, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.database.session import Base
@@ -162,3 +162,84 @@ class FlightPriceObservationRecord(Base):
     duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     provider: Mapped[str] = mapped_column(String(255))
     observed_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class RailPriceObservationRecord(Base):
+    """Stores manually collected rail-ticket prices for future estimate calibration.
+
+    These records are deliberately separate from GTFS timetable data.  A fare
+    normally applies to a complete itinerary, rather than to a single train
+    leg, so the origin, destination and itinerary summary are saved together.
+    The route planner does not read this table yet; it is a curated dataset
+    prepared for a later rail-price estimation feature.
+    """
+
+    __tablename__ = "rail_price_observations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    origin_station_name: Mapped[str] = mapped_column(String(255), index=True)
+    origin_station_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    destination_station_name: Mapped[str] = mapped_column(String(255), index=True)
+    destination_station_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    travel_date: Mapped[str] = mapped_column(String(10), index=True)
+    departure_time: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    arrival_time: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    search_date: Mapped[str] = mapped_column(String(10), index=True)
+    booking_days_ahead: Mapped[int] = mapped_column(Integer, index=True)
+    passengers: Mapped[int] = mapped_column(Integer, default=1)
+    travel_class: Mapped[str] = mapped_column(String(20), default="2")
+    discount_profile: Mapped[str] = mapped_column(String(100), default="none")
+    has_deutschlandticket: Mapped[bool] = mapped_column(Boolean, default=False)
+    fare_type: Mapped[str] = mapped_column(String(100), default="lowest_available")
+    price_eur: Mapped[float] = mapped_column(Float)
+    price_min_eur: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price_max_eur: Mapped[float | None] = mapped_column(Float, nullable=True)
+    currency: Mapped[str] = mapped_column(String(3), default="EUR")
+    provider: Mapped[str] = mapped_column(String(255))
+    provider_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    train_types: Mapped[list] = mapped_column(JSON, default=list)
+    itinerary_summary: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    transfer_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_refundable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    observation_source: Mapped[str] = mapped_column(String(100), default="manual")
+    market: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    service_category: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+    provider_context: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    estimated_distance_km: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    is_example: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    notes: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+
+
+class RailPriceProfileRecord(Base):
+    """Stores a compact, explainable rail-fare estimate rule.
+
+    Profiles deliberately describe a market segment instead of a particular
+    city pair.  This allows one calibrated rule to estimate many routes while
+    preserving the source and confidence of the underlying assumption.
+    """
+
+    __tablename__ = "rail_price_profiles"
+    __table_args__ = (
+        UniqueConstraint("profile_key", name="uq_rail_price_profile_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    profile_key: Mapped[str] = mapped_column(String(150), index=True)
+    market: Mapped[str] = mapped_column(String(30), index=True)
+    service_category: Mapped[str] = mapped_column(String(50), index=True)
+    provider_context: Mapped[str] = mapped_column(String(100), default="any", index=True)
+    distance_min_km: Mapped[float] = mapped_column(Float)
+    distance_max_km: Mapped[float] = mapped_column(Float)
+    booking_days_min: Mapped[int] = mapped_column(Integer)
+    booking_days_max: Mapped[int] = mapped_column(Integer)
+    price_min_eur: Mapped[float] = mapped_column(Float)
+    price_typical_eur: Mapped[float] = mapped_column(Float)
+    price_max_eur: Mapped[float] = mapped_column(Float)
+    confidence: Mapped[str] = mapped_column(String(20), default="low")
+    sample_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source: Mapped[str] = mapped_column(String(255))
+    is_prototype: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    notes: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, index=True)

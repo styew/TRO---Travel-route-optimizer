@@ -277,6 +277,187 @@ For a visual table editor, install **DB Browser for SQLite** and open
 data, stop the backend container and make a copy of the database file. Direct
 editing during active searches can create locks or invalidate cached results.
 
+### Manual rail-price observations
+
+`rail_price_observations` is a separate preparation table for real rail prices
+collected manually. It is not used by route calculation yet, so adding rows
+cannot change existing route results. Each row describes the price of a whole
+ticket itinerary, rather than an individual train leg. This makes it suitable
+for later estimate calibration, because one ticket can cover several trains.
+
+Create the table and one clearly labelled non-real example row with:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\prepare_rail_price_observations.py
+```
+
+Use `scripts/rail_price_observations_template.csv` as a safe spreadsheet
+template. In DB Browser for SQLite, open `data/tro.db`, choose the
+`rail_price_observations` table and remove the row where `is_example` is true
+before analysing real observations. Keep a consistent search profile (for
+example: one adult, second class, no discount card and no seat reservation)
+so that the data can be compared later.
+
+`price_eur` stores one observed price or the midpoint of a reported range.
+When a source only provides a range, `price_min_eur` and `price_max_eur`
+preserve its lower and upper bounds instead of pretending that the midpoint is
+an exact fare. The included `import_user_rail_price_observations.py` script
+records the initial ICE calibration supplied during project development. It is
+idempotent and does not affect route results.
+
+### Prototype rail-price profiles
+
+TRO also has a separate `rail_price_profiles` table for compact, explainable
+price rules. A profile covers a market segment such as German long-distance
+rail between 400 and 750 km booked zero to two days ahead. It is not a list of
+city pairs and it never claims a current fare.
+
+The initial pilot contains low-confidence ICE profiles split by rough
+rail-distance band (100–199 km, 200–399 km, 400–599 km and 600–750 km) and
+booking horizon (zero to two days or three to 21 days). They are calibrated
+from project-owner observations for Berlin–Hamburg, Berlin–Kiel,
+Berlin–Leipzig, Berlin–Düsseldorf, Frankfurt–Köln, München–Augsburg,
+Stuttgart–Hamburg and München–Berlin. A very narrow München–Salzburg
+prototype also distinguishes RJ/EC from RE, but it must not be generalized to
+other international services. These remain low confidence until authorised
+observations can calibrate more markets, travel times, discount products and
+train types.
+
+European calibration observations can additionally use `market` pairs such
+as `DE-FR` and an optional seller/operator context such as `db` or `oebb`.
+This avoids incorrectly averaging two materially different offers for the
+same route. `scripts/import_user_european_rail_observations.py` contains the
+initial owner-provided Omio research for München to Paris, Wien, Zürich,
+Amsterdam, Milano, Roma and Zagreb. These route-level records retain stated
+transfer stations and always represent an observed full itinerary, not the
+sum of individual train legs.
+
+### Statistical rail-price estimates
+
+TRO can derive price profiles from classified observations rather than relying
+only on manually written ranges. Each usable observation needs a market,
+service category, provider context and estimated itinerary distance. Until a
+European timetable is imported, the initial route distances are documented
+approximations. The timetable will later replace them with actual itinerary
+distances.
+
+Run these maintenance scripts after importing new curated observations:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\enrich_rail_price_observation_metadata.py
+.\.venv\Scripts\python.exe .\scripts\rebuild_rail_price_profiles.py
+```
+
+The derived model uses the median of comparable observations, then includes a
+EUR 20 time-of-day allowance reported during project research. Its confidence
+is based on sample size: very low for one or two observations, low for three
+to seven, medium for eight to 19, and high for 20 or more. A profile remains
+an estimate and never confirms ticket availability.
+
+### German long-distance rail graph
+
+The Deutschlandticket graph and paid German long-distance rail are deliberately
+separate. The first contains filtered regional services only; the second uses
+the official GTFS.DE long-distance feed, which includes ICE, IC, EC, railJet
+and night trains. Keeping the graphs separate prevents a paid ICE service from
+being accidentally treated as a Deutschlandticket route.
+
+Download the current long-distance feed and build its local OpenTripPlanner
+graph before enabling schedule-based paid-train discovery:
+
+```powershell
+.\scripts\update_long_distance_gtfs.ps1
+docker compose --profile long-distance-build run --rm otp-long-distance-build
+docker compose up -d --build
+```
+
+The downloaded GTFS archive is an input artifact, while `graph.obj` is the
+query-optimized routing graph. Keep the archive until the graph has been
+validated and record its source/version for reproducibility. Raw archives can
+then be archived outside the running server; the SQLite database stores only
+TRO metadata and fare observations, not every timetable row.
+
+GTFS.DE publishes a rolling timetable window rather than an entire year. The
+current graph only returns journeys whose selected date is inside that feed's
+calendar range. Refresh and rebuild this graph whenever a later travel date is
+needed; the feed metadata should be stored alongside each refresh.
+
+### European rail expansion (France, Switzerland, Italy and Austria)
+
+TRO now has a staging area for an optional shared European rail graph under
+`otp-data/europe/`. It keeps each national GTFS archive as a distinct source
+feed, then creates rail-only copies for OpenTripPlanner. This is deliberately
+not enabled in the normal backend yet: a Frankfurt-to-Paris or München-to-Wien
+journey must first receive explicit, tested station-transfer links at borders.
+Simply placing four independent timetables in one routing engine does not
+guarantee that it can change trains between them.
+
+The selected primary sources are:
+
+* France: SNCF national GTFS (TGV, Intercités and TER), downloadable directly
+  through the French national transport-data portal.
+* Switzerland: the national Swiss public-transport GTFS. It includes more than
+  rail, so TRO filters it to rail before building.
+* Austria: ÖBB GTFS, provided under CC BY 4.0 after the downloader accepts the
+  portal's terms.
+* Italy: the Italian National Access Point publishes the official Trenitalia
+  schedule as NeTEx. It must be converted and validated into GTFS before it is
+  staged; TRO does not silently rely on an unofficial conversion.
+
+Download France or Switzerland directly:
+
+```powershell
+.\scripts\update_european_gtfs.ps1 -Country France
+.\scripts\update_european_gtfs.ps1 -Country Switzerland
+```
+
+After manually downloading a valid **GTFS ZIP** from an official source, stage
+the other countries explicitly. This lets the project keep the source and its
+licence decision auditable:
+
+```powershell
+.\scripts\update_european_gtfs.ps1 -Country Austria -SourcePath "C:\Downloads\oebb-gtfs.zip"
+```
+
+Then make the rail-only OTP inputs and build the optional Europe graph:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\build_european_rail_feeds.py
+docker compose --profile europe-build run --rm otp-europe-build
+docker compose --profile europe up -d otp-europe
+```
+
+For a large national source such as Switzerland, process it independently and
+wait for the completion message before rebuilding the OTP graph:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\build_european_rail_feeds.py --country switzerland
+```
+
+Do not stage Italy until its official NeTEx archive has passed a dedicated,
+documented NeTEx-to-GTFS conversion and validation step. The raw archives and
+the generated graph are local runtime data, ignored by Git.
+
+On application startup, TRO creates `rail_price_profiles` and seeds these
+profiles once. Existing profiles are never overwritten automatically, so they
+can later be adjusted through a controlled import or database administration
+workflow.
+
+Use the testing endpoint to inspect the model without changing a route graph:
+
+```powershell
+curl -X POST http://127.0.0.1:8000/rail-price-estimate `
+  -H "Content-Type: application/json" `
+  -d '{"market":"DE","service_category":"long_distance","distance_km":505,"booking_days_ahead":7}'
+```
+
+The response contains `estimated_min_eur`, `estimated_typical_eur`,
+`estimated_max_eur`, the matching `profile_key`, the source, and a confidence
+label. No live supplier request occurs. Once the separate official GTFS.DE
+long-distance graph has been built, the production graph uses these profiles
+for domestic German long-distance rail routes. The timetable comes from
+GTFS.DE, while the fare remains an estimate and never a live supplier offer.
+
 ### Optimization
 
 Graph-based algorithms will be used to model and evaluate possible routes.
