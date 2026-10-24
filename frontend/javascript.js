@@ -308,7 +308,9 @@ function showSearchResult(data, basicFilters) {
         const routeDetails = document.createElement("details");
         routeDetails.className = "connection_details complete_route_details";
         const routeSummary = document.createElement("summary");
-        routeSummary.textContent = `${completeRoutes.length} complete route option(s) ranked by price`;
+        const rankingLabels = { lowest_price: "lowest price", fastest: "shortest journey time", balanced: "balance of price and time" };
+        const rankingLabel = rankingLabels[data.route_plan.ranking_criterion] || rankingLabels.lowest_price;
+        routeSummary.textContent = `${completeRoutes.length} complete route option(s) ranked by ${rankingLabel}`;
         routeDetails.appendChild(routeSummary);
         const routeList = document.createElement("div");
         routeList.className = "complete_routes";
@@ -587,13 +589,14 @@ searchButton.addEventListener("click", async () => {
         maxTransportCategories: Number(document.getElementById("max_transport_categories").value),
         minimumTrainTransferMinutes: Number(document.getElementById("minimum_train_transfer_minutes").value),
         respectDepartureTime: document.getElementById("respect_departure_time").checked,
+        rankingCriterion: document.getElementById("ranking_criterion").value,
     };
     if (!origin || !destination || !date || !departureTime) return showMessage("Enter origin, destination, date, and departure time before searching.", true);
     searchButton.disabled = true;
     searchButton.textContent = "Building graph…";
     try {
         const apiBaseUrl = document.querySelector('meta[name="tro-api-base-url"]')?.content.replace(/\/$/, "") || "";
-        const response = await fetch(`${apiBaseUrl}/search`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ origin, destination, date, departure_time: departureTime, respect_departure_time: basicFilters.respectDepartureTime, has_deutschlandticket: basicFilters.hasDeutschlandticket, travellers: basicFilters.travellers, max_transport_categories: basicFilters.maxTransportCategories, minimum_train_transfer_minutes: basicFilters.minimumTrainTransferMinutes }) });
+        const response = await fetch(`${apiBaseUrl}/search`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ origin, destination, date, departure_time: departureTime, respect_departure_time: basicFilters.respectDepartureTime, has_deutschlandticket: basicFilters.hasDeutschlandticket, travellers: basicFilters.travellers, max_transport_categories: basicFilters.maxTransportCategories, minimum_train_transfer_minutes: basicFilters.minimumTrainTransferMinutes, ranking_criterion: basicFilters.rankingCriterion }) });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || "The graph could not be created.");
         latestGraph = data.graph;

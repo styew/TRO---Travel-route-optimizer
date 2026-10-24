@@ -37,12 +37,8 @@ from backend.services.infra import (
 )
 from backend.services.node_factory import create_city_transport_nodes
 from backend.services.nominatim_infrastructure import discover_terminal_fallback
-from backend.services.regional_train_provider import discover_regional_train_edges
-from backend.services.international_rail_provider import discover_international_rail_edges
-from backend.services.rail_network_catalog import (
-    corridor_gateway_nodes,
-    select_rail_corridor,
-)
+from backend.rail.corridors.catalog import select_corridor
+from backend.rail.corridors.provider import discover_corridor_edges
 from backend.services.route_planner import find_lowest_price_routes
 from backend.rail.germany_connection_provider import discover_german_network_edges
 from backend.rail.france_connection_provider import discover_french_rail_edges
@@ -180,7 +176,7 @@ async def get_city_infrastructure(city: dict, debug: bool) -> tuple[dict, bool, 
     summary="Discover initial graph nodes and estimated car edges",
     description="""Geocodes origin and destination, loads or discovers city infrastructure, and assembles a serializable graph.
 
-The graph always contains an estimated direct-car edge between city centers. When the origin has no local eligible train station, it may contain estimated car-access edges to up to ten nearby main-station gateways. With `respect_departure_time` enabled, `departure_time` sets the local journey start, trains are queried after estimated car access plus a ten-minute station buffer, and car-to-flight paths require a ninety-minute airport-arrival buffer. Disable it to compare connections available across the selected day without rejecting paths because of the chosen start time. When airport nodes have IATA codes, TRO loads a permitted cached published schedule from AeroDataBox and refreshes only missing airport/day records. Scheduled flights include airline, flight number and timings, while their prices remain explicitly estimated from historic observations or the local model. Optional Duffel offers and Travelpayouts cached price references can supplement these schedule edges. It may also compare up to three nearby IATA airport gateways reachable by an estimated car journey, so a cheaper gateway flight can compete with a local-airport flight. If `has_deutschlandticket` is true and the local OpenTripPlanner service is available, it adds regional-rail itineraries with zero marginal ticket cost and scheduled waiting times for every train transfer. For configured international corridors, it can continue from a bounded German gateway station onto separately priced international rail; the D-Ticket segment remains zero marginal cost and the onward rail fare is explicitly estimated. The API ranks up to ten complete, cycle-free paths by lowest estimated price. `max_transport_categories` limits changes between car, train, flight, and ferry; consecutive train legs count as one category.""",
+The graph always contains an estimated direct-car edge between city centers. When the origin has no local eligible train station, it may contain estimated car-access edges to up to ten nearby main-station gateways. With `respect_departure_time` enabled, `departure_time` sets the local journey start, trains are queried after estimated car access plus a ten-minute station buffer, and car-to-flight paths require a ninety-minute airport-arrival buffer. Disable it to compare connections available across the selected day without rejecting paths because of the chosen start time. When airport nodes have IATA codes, TRO loads a permitted cached published schedule from AeroDataBox and refreshes only missing airport/day records. Scheduled flights include airline, flight number and timings, while their prices remain explicitly estimated from historic observations or the local model. Optional Duffel offers and Travelpayouts cached price references can supplement these schedule edges. It may also compare up to three nearby IATA airport gateways reachable by an estimated car journey, so a cheaper gateway flight can compete with a local-airport flight. If `has_deutschlandticket` is true and the local OpenTripPlanner service is available, it adds regional-rail itineraries with zero marginal ticket cost and scheduled waiting times for every train transfer. For configured international corridors, it can continue from a bounded German gateway station onto separately priced international rail; the D-Ticket segment remains zero marginal cost and the onward rail fare is explicitly estimated. The API ranks up to ten complete, cycle-free paths using ranking_criterion: lowest_price, fastest, or balanced. Total journey time includes scheduled waiting. `max_transport_categories` limits changes between car, train, flight, and ferry; consecutive train legs count as one category.""",
     response_description="City data, selected infrastructure, nodes, estimated car edges, and cache status.",
     responses={404: {"description": "The origin or destination could not be geocoded as a city."}, 503: {"description": "A geocoding provider is temporarily unavailable or rate limited."}, 200: {"description": "Initial graph nodes and available estimated car edges were discovered."}},
 )
@@ -220,7 +216,7 @@ async def search(request: SearchRequest):
     gateway_nodes, gateway_airport_nodes = [], []
     graph_warnings, gateway_candidates, gateway_airport_candidates = [], [], []
     local_station_data_available = not any(warning["infrastructure_type"] == "train_stations" for warning in origin_warnings)
-    if not origin_infrastructure["train_stations"] and local_station_data_available:
+    if not origin_infrastructure["train_stations"] and local_station_data_available and origin_data.get("country_code") != "FR":
         try:
             gateway_candidates = await discover_gateway_train_stations(origin_data["latitude"], origin_data["longitude"])
             gateway_nodes = create_gateway_station_nodes(gateway_candidates)
@@ -234,15 +230,10 @@ async def search(request: SearchRequest):
     # Only a configured country corridor receives international gateway nodes.
     # This keeps the normal German search small and avoids loading worldwide
     # schedules when the user is not leaving Germany.
-    international_corridor = (
-        select_rail_corridor(origin_data.get("country_code"), destination_data.get("country_code"))
-        if request.has_deutschlandticket else None
+    international_corridor = select_corridor(
+        origin_data.get("country_code"), destination_data.get("country_code")
     )
-    # The European timetable archive, not a hard-coded city list, supplies
-    # German long-distance interchange candidates near this origin.
-    international_gateway_nodes = corridor_gateway_nodes(
-        international_corridor, origin_center
-    )
+    international_gateway_nodes = []
     train_search_time = request.departure_time if request.respect_departure_time else "00:00"
     gateway_departures = {
         gateway.id: gateway_train_departure_time(
@@ -293,24 +284,19 @@ async def search(request: SearchRequest):
             discover_flight_edges(origin_nodes, destination_nodes, request.date, request.travellers),
             timings,
         ),
-        # International D-Ticket corridors have not yet been rebuilt as a
-        # country package. Keep only this narrow compatibility bridge until
-        # France and the first border corridor are migrated.
+        # Country access/egress now belongs to the selected corridor package.
         _measure_async(
             "international_regional_access",
-            discover_regional_train_edges(
-            origin_nodes + gateway_nodes, international_gateway_nodes, request.date,
-            train_search_time, request.has_deutschlandticket, gateway_departures,
-            request.minimum_train_transfer_minutes, not request.respect_departure_time,
-            ) if international_corridor else _empty_edge_result(),
+            _empty_edge_result(),
             timings,
         ),
         _measure_async(
             "international_paid_rail",
-            discover_international_rail_edges(
-            international_corridor, international_gateway_nodes, destination_center,
-            request.date, train_search_time, request.travellers,
-            request.minimum_train_transfer_minutes, not request.respect_departure_time,
+            discover_corridor_edges(
+            international_corridor, origin_nodes, destination_nodes,
+            origin_data.get("country_code"), destination_data.get("country_code"),
+            request.date, train_search_time, request.has_deutschlandticket,
+            request.travellers, request.minimum_train_transfer_minutes, not request.respect_departure_time,
             ),
             timings,
         ),
@@ -339,7 +325,7 @@ async def search(request: SearchRequest):
     )
     flight_edges, flight_warnings = flight_result
     d_ticket_gateway_edges, d_ticket_gateway_warnings = d_ticket_gateway_result
-    international_rail_edges, international_rail_warnings, international_rail_diagnostics = international_rail_result
+    international_gateway_nodes, international_rail_edges, international_rail_warnings, international_rail_diagnostics = international_rail_result
     commercial_train_edges, commercial_train_warnings = commercial_train_result
     (
         german_rail_nodes,
@@ -448,7 +434,8 @@ async def search(request: SearchRequest):
         departure_at=journey_departure,
     )
     route_plan = find_lowest_price_routes(
-        graph, respect_departure_time=request.respect_departure_time
+        graph, respect_departure_time=request.respect_departure_time,
+        ranking_criterion=request.ranking_criterion,
     )
     timings["total"] = round((perf_counter() - started_at) * 1_000)
     response = {
@@ -467,6 +454,7 @@ async def search(request: SearchRequest):
             "origin_country_code": origin_data.get("country_code"),
             "destination_country_code": destination_data.get("country_code"),
             "has_deutschlandticket": request.has_deutschlandticket,
+            "ranking_criterion": request.ranking_criterion,
             "minimum_train_transfer_minutes": request.minimum_train_transfer_minutes,
             "respect_departure_time": request.respect_departure_time,
         },
@@ -498,9 +486,9 @@ async def search(request: SearchRequest):
             "international_rail_search": {
                 "corridor": international_corridor.key if international_corridor else None,
                 "gateway_nodes": [node.name for node in international_gateway_nodes],
-                "d_ticket_access_edge_count": len(d_ticket_gateway_edges),
-                "paid_international_edge_count": len(international_rail_edges),
-                "price_note": "Only the paid international segment uses a rail-price estimate.",
+                "d_ticket_access_edge_count": sum(edge.metadata.get("ticket_coverage") == "Deutschlandticket" for edge in international_rail_edges),
+                "paid_international_edge_count": international_rail_diagnostics.get("crossing_edges", 0),
+                "price_note": "Cross-border, French and German long-distance rail are estimated paid fares.",
             },
             "german_long_distance_search": {
                 "origin_station_nodes": [node.name for node in origin_nodes + gateway_nodes if node.type == "train_station"],
@@ -514,7 +502,7 @@ async def search(request: SearchRequest):
     if request.include_diagnostics:
         response["rail_diagnostics"] = {
             "international": international_rail_diagnostics,
-            "international_d_ticket_access_edge_count": len(d_ticket_gateway_edges),
+            "international_d_ticket_access_edge_count": sum(edge.metadata.get("ticket_coverage") == "Deutschlandticket" for edge in international_rail_edges),
             "german_modular_rail": german_rail_diagnostics,
             "french_modular_rail": french_rail_diagnostics,
             "complete_route_count": len(route_plan.routes),

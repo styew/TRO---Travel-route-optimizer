@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 
 from backend.models.node import TransportNode
 
+RouteRanking = Literal["lowest_price", "fastest", "balanced"]
+
 
 class GraphPolicy(BaseModel):
     """Defines safety limits while allowing several legs of the same transport type."""
@@ -76,8 +78,8 @@ class RouteOption(BaseModel):
 
 
 class RoutePlan(BaseModel):
-    """Cheapest complete route options currently available in a route graph."""
+    """Complete routes ranked by the requested price/time preference."""
 
-    ranking_criterion: Literal["lowest_price"] = "lowest_price"
+    ranking_criterion: RouteRanking = "lowest_price"
     max_transport_categories: int
     routes: list[RouteOption]

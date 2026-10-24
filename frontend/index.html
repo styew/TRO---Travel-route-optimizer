@@ -81,6 +81,15 @@
                         <label for="travellers">Travellers</label>
                         <input type="number" id="travellers" name="travellers" min="1" max="9" value="1">
                     </div>
+                    <div class="input_field route_preference">
+                        <label for="ranking_criterion">Route priority</label>
+                        <select id="ranking_criterion" name="ranking_criterion" aria-describedby="ranking_hint">
+                            <option value="lowest_price" selected>Lowest price</option>
+                            <option value="fastest">Fastest</option>
+                            <option value="balanced">Balance price and time</option>
+                        </select>
+                        <p class="input_hint" id="ranking_hint">Balanced gives equal weight to estimated price and total journey time, including waits.</p>
+                    </div>
                 </div>
             </section>
 

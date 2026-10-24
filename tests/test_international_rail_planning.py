@@ -32,6 +32,19 @@ def _station(identifier: str, name: str) -> TransportNode:
 class InternationalRailPlanningTests(unittest.TestCase):
     """Protect the bounded-corridor and fare-boundary rules from regressions."""
 
+    def test_equal_price_ranking_includes_station_waiting_time(self) -> None:
+        """A shorter train ride with a long wait must not beat a faster journey."""
+        origin, gateway, destination = [_station(key, key) for key in ("start", "change", "end")]
+        first = TravelEdge(id="first", origin_node_id="start", destination_node_id="change", mode="train", edge_type="train_connection", estimated_distance_km=50, estimated_duration_minutes=30, estimated_price_eur=10, provider="test", metadata={"planned_departure": "2026-10-29T08:00:00+01:00", "planned_arrival": "2026-10-29T08:30:00+01:00"})
+        onward = first.model_copy(deep=True, update={"id": "onward", "origin_node_id": "change", "destination_node_id": "end"})
+        onward.metadata.update(planned_departure="2026-10-29T12:00:00+01:00", planned_arrival="2026-10-29T12:30:00+01:00")
+        direct = first.model_copy(deep=True, update={"id": "direct", "destination_node_id": "end", "estimated_duration_minutes": 120, "estimated_price_eur": 20})
+        direct.metadata.update(planned_arrival="2026-10-29T10:00:00+01:00")
+        graph = RouteGraph(nodes=[origin, gateway, destination], edges=[first, onward, direct], origin_node_ids=["start"], destination_node_ids=["end"], policy=GraphPolicy())
+        routes = find_lowest_price_routes(graph).routes
+        self.assertEqual(routes[0].segments[0].id, "direct")
+        self.assertEqual(routes[1].total_estimated_duration_minutes, 270)
+
     def test_catalog_selects_only_configured_germany_france_corridor(self) -> None:
         """A Germany-only search has no corridor or hard-coded gateway list."""
         corridor = select_rail_corridor("DE", "FR")

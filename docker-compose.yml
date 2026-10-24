@@ -8,6 +8,8 @@ services:
       OTP_GTFS_URL: http://otp:8080/otp/gtfs/v1
       OTP_LONG_DISTANCE_URL: http://otp-long-distance:8080/otp/gtfs/v1
       OTP_FRANCE_URL: http://otp-france:8080/otp/gtfs/v1
+      # Built offline from DE–FR services only; no Europe OTP dependency.
+      DE_FR_TIMETABLE_PATH: /app/data/rail/de-fr.sqlite
       # Optional. The backend degrades gracefully when the Europe profile is
       # stopped, so domestic searches do not require this larger graph.
       OTP_EUROPE_URL: http://otp-europe:8080/otp/gtfs/v1

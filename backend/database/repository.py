@@ -23,6 +23,7 @@ CACHE_TTL_DAYS = 30
 # Version 8 replaces French railway nodes sourced from Overpass with SNCF GTFS
 # parent-station hubs. Existing French city caches therefore refresh once.
 INFRASTRUCTURE_FILTER_VERSION = 8
+FRENCH_INFRASTRUCTURE_FILTER_VERSION = 9
 FLIGHT_REFERENCE_CACHE_TTL_HOURS = 24
 GATEWAY_AIRPORT_CACHE_TTL_DAYS = 30
 SCHEDULE_CACHE_TTL_DAYS = 7
@@ -48,7 +49,9 @@ class CityNodeRepository:
             )
             if city is None:
                 return None
-            if city.infrastructure_filter_version != INFRASTRUCTURE_FILTER_VERSION:
+            if city.infrastructure_filter_version not in (
+                INFRASTRUCTURE_FILTER_VERSION, FRENCH_INFRASTRUCTURE_FILTER_VERSION,
+            ):
                 return None
 
             rows = session.execute(
@@ -62,6 +65,10 @@ class CityNodeRepository:
                     CityNodeCandidateRecord.selected.is_(True),
                 )
             ).all()
+
+            if any(node.source == "sncf-gtfs" for node, _ in rows):
+                if city.infrastructure_filter_version != FRENCH_INFRASTRUCTURE_FILTER_VERSION:
+                    return None
 
             # Restore operational IDs from the registry, including for city
             # caches written before French hubs carried GTFS metadata.
@@ -119,7 +126,13 @@ class CityNodeRepository:
             city_record.latitude = city["latitude"]
             city_record.longitude = city["longitude"]
             city_record.source = city["source"]
-            city_record.infrastructure_filter_version = INFRASTRUCTURE_FILTER_VERSION
+            is_french = city.get("country_code") == "FR" or any(
+                node.get("source") == "sncf-gtfs"
+                for node in infrastructure.get("train_stations", [])
+            )
+            city_record.infrastructure_filter_version = (
+                FRENCH_INFRASTRUCTURE_FILTER_VERSION if is_french else INFRASTRUCTURE_FILTER_VERSION
+            )
             city_record.fetched_at = now
             city_record.expires_at = expires_at
             session.flush()

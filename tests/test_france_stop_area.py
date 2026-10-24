@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from backend.database.session import Base
-from backend.database.models import RailStationRecord, RailStationMembershipRecord
+from backend.database.models import CityRecord, RailStationRecord, RailStationMembershipRecord
 from backend.database.repository import CityNodeRepository
 from backend.rail.france_connection_provider import OpenTripPlannerFranceRailProvider, FranceRailRoutingError
 from backend.services.node_factory import create_city_transport_nodes
@@ -31,6 +31,14 @@ class FranceStopAreaTests(unittest.IsolatedAsyncioTestCase):
             repository = CityNodeRepository()
             repository.save_infrastructure(self.city, {"train_stations": [self.station], "airports": []})
             cached = repository.get_infrastructure("paris")
+            with sessions() as session:
+                record = session.query(CityRecord).filter_by(source_id="paris").one()
+                record.infrastructure_filter_version = 8
+                session.commit()
+            self.assertIsNone(repository.get_infrastructure("paris"))
+            german_city = {**self.city, "source_id": "berlin", "city_name": "Berlin"}
+            repository.save_infrastructure(german_city, {"train_stations": [], "airports": []})
+            self.assertIsNotNone(repository.get_infrastructure("berlin"))
         self.assertEqual(cached["train_stations"][0]["gtfs_stop_ids"], self.station["gtfs_stop_ids"])
         node = create_city_transport_nodes(self.city, cached, "origin")[1]
         provider = OpenTripPlannerFranceRailProvider()
