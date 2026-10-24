@@ -7,6 +7,7 @@ services:
       DATABASE_URL: sqlite:////app/data/tro.db
       OTP_GTFS_URL: http://otp:8080/otp/gtfs/v1
       OTP_LONG_DISTANCE_URL: http://otp-long-distance:8080/otp/gtfs/v1
+      OTP_FRANCE_URL: http://otp-france:8080/otp/gtfs/v1
       # Optional. The backend degrades gracefully when the Europe profile is
       # stopped, so domestic searches do not require this larger graph.
       OTP_EUROPE_URL: http://otp-europe:8080/otp/gtfs/v1
@@ -57,6 +58,25 @@ services:
     command: ["--build", "--save"]
     volumes:
       - ./otp-data/long-distance:/var/opentripplanner
+
+  # France stays independent from the shared optional Europe graph. It is
+  # started only for French domestic searches and future DE↔FR corridors.
+  otp-france:
+    image: docker.io/opentripplanner/opentripplanner:latest
+    profiles: ["france"]
+    container_name: tro-otp-france
+    command: ["--load", "--serve"]
+    expose:
+      - "8080"
+    volumes:
+      - ./otp-data/france:/var/opentripplanner
+
+  otp-france-build:
+    image: docker.io/opentripplanner/opentripplanner:latest
+    profiles: ["france-build"]
+    command: ["--build", "--save"]
+    volumes:
+      - ./otp-data/france:/var/opentripplanner
 
   # Optional European graph: currently France and Switzerland.
   otp-europe:

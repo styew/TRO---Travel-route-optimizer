@@ -34,6 +34,14 @@ def initialize_database() -> None:
         if "infrastructure_filter_version" not in city_columns:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE cities ADD COLUMN infrastructure_filter_version INTEGER NOT NULL DEFAULT 1"))
+        membership_columns = {
+            column["name"] for column in inspect(engine).get_columns("rail_station_memberships")
+        }
+        if "service_score" not in membership_columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("ALTER TABLE rail_station_memberships ADD COLUMN service_score INTEGER NOT NULL DEFAULT 1")
+                )
         rail_observation_columns = {
             column["name"]
             for column in inspect(engine).get_columns("rail_price_observations")

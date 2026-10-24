@@ -13,12 +13,16 @@ from backend.database.models import (
     GatewayAirportRecord,
     ScheduledFlightRecord,
     TransportNodeRecord,
+    RailStationRecord,
+    RailStationMembershipRecord,
 )
 from backend.models.graph import TravelEdge
 from backend.database.session import SessionLocal
 
 CACHE_TTL_DAYS = 30
-INFRASTRUCTURE_FILTER_VERSION = 5
+# Version 8 replaces French railway nodes sourced from Overpass with SNCF GTFS
+# parent-station hubs. Existing French city caches therefore refresh once.
+INFRASTRUCTURE_FILTER_VERSION = 8
 FLIGHT_REFERENCE_CACHE_TTL_HOURS = 24
 GATEWAY_AIRPORT_CACHE_TTL_DAYS = 30
 SCHEDULE_CACHE_TTL_DAYS = 7
@@ -59,6 +63,24 @@ class CityNodeRepository:
                 )
             ).all()
 
+            # Restore operational IDs from the registry, including for city
+            # caches written before French hubs carried GTFS metadata.
+            french_stop_ids = {}
+            for node, _ in rows:
+                prefix = "gtfs:fr-national-rail:"
+                if node.source_id.startswith(prefix):
+                    stop_id = session.scalar(
+                        select(RailStationMembershipRecord.source_stop_id)
+                        .join(RailStationRecord, RailStationRecord.id == RailStationMembershipRecord.station_id)
+                        .where(
+                            RailStationRecord.canonical_id == node.source_id[len(prefix):],
+                            RailStationMembershipRecord.network_key == "fr-national-rail",
+                            RailStationMembershipRecord.is_parent_station.is_(True),
+                        )
+                    )
+                    if stop_id:
+                        french_stop_ids[node.source_id] = {"fr-national-rail": stop_id}
+
         infrastructure = {"train_stations": [], "airports": []}
         for node, candidate in rows:
             normalized_node = {
@@ -71,6 +93,7 @@ class CityNodeRepository:
                 "iata": node.iata,
                 "icao": node.icao,
                 "source": node.source,
+                "gtfs_stop_ids": french_stop_ids.get(node.source_id, {}),
             }
             if node.node_type == "train_station":
                 infrastructure["train_stations"].append(normalized_node)

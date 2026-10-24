@@ -45,6 +45,8 @@ from backend.services.rail_network_catalog import (
 )
 from backend.services.route_planner import find_lowest_price_routes
 from backend.rail.germany_connection_provider import discover_german_network_edges
+from backend.rail.france_connection_provider import discover_french_rail_edges
+from backend.rail.france_station_registry import find_french_city_hubs
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Graph discovery"])
@@ -60,6 +62,11 @@ async def _empty_rail_result(reason: str) -> tuple[list, list, list, dict]:
 async def _empty_edge_result() -> tuple[list, list]:
     """Return the low-level edge-provider shape for an inapplicable bridge."""
     return [], []
+
+
+async def _empty_timed_rail_result(reason: str) -> tuple[list, list, dict]:
+    """Return the France-provider result shape when its country package is inactive."""
+    return [], [], {"enabled": False, "reason": reason}
 
 
 async def _measure_async(label: str, operation, timings: dict[str, int]):
@@ -78,6 +85,51 @@ async def get_city_infrastructure(city: dict, debug: bool) -> tuple[dict, bool, 
     debug_data = None
     warnings: list[dict[str, str]] = []
     if infrastructure is None:
+        # SNCF GTFS is the authoritative train-terminal source in France.  A
+        # live Overpass lookup is both unreliable and unable to consistently
+        # return a complete Paris/Lyon terminal set.
+        if city.get("country_code") == "FR":
+            raw_stations = find_french_city_hubs(city)
+            raw_airports: list[dict] = []
+            try:
+                raw_airports = await discover_airports(city["latitude"], city["longitude"])
+            except Exception as error:  # Airport lookup remains an optional external source.
+                logger.warning("Could not discover airports for %s: %s", city["city_name"], error)
+                try:
+                    raw_airports = await discover_terminal_fallback(
+                        city["city_name"], city["latitude"], city["longitude"], "airport"
+                    )
+                except httpx.HTTPError:
+                    raw_airports = []
+                if raw_airports:
+                    warnings.append({"city": city["city_name"], "infrastructure_type": "airports", "message": "Overpass was unavailable; a Nominatim fallback terminal was used."})
+                else:
+                    warnings.append({"city": city["city_name"], "infrastructure_type": "airports", "message": "External infrastructure data is temporarily unavailable."})
+            if not raw_stations:
+                warnings.append({
+                    "city": city["city_name"],
+                    "infrastructure_type": "train_stations",
+                    "message": "The French GTFS hub index has no matching city terminals yet.",
+                })
+            raw_airports = await enrich_airport_codes(raw_airports)
+            infrastructure = {
+                "train_stations": raw_stations,
+                "airports": select_city_airports(raw_airports, city["city_name"]),
+            }
+            if debug:
+                debug_data = {
+                    "cache_bypassed": True,
+                    "train_station_filter": {
+                        "rule_applied": "france_gtfs_city_hubs",
+                        "selected": raw_stations,
+                        "candidates": raw_stations,
+                    },
+                    "airport_filter": explain_airport_filter(raw_airports, city["city_name"]),
+                }
+            if raw_stations:
+                city_node_repository.save_infrastructure(city, infrastructure)
+            return infrastructure, cache_hit, debug_data, warnings
+
         station_result, airport_result = await asyncio.gather(
             discover_train_stations(city["latitude"], city["longitude"]),
             discover_airports(city["latitude"], city["longitude"]),
@@ -108,7 +160,9 @@ async def get_city_infrastructure(city: dict, debug: bool) -> tuple[dict, bool, 
                 raw_airports = result
         # Airport codes are necessary to ask a flight provider for an airport pair.
         raw_airports = await enrich_airport_codes(raw_airports)
-        station_filter = explain_train_station_filter(raw_stations, city["city_name"])
+        station_filter = explain_train_station_filter(
+            raw_stations, city["city_name"], city.get("country_code")
+        )
         infrastructure = {"train_stations": station_filter["selected"], "airports": select_city_airports(raw_airports, city["city_name"])}
         if debug:
             debug_data = {"cache_bypassed": True, "train_station_filter": station_filter, "airport_filter": explain_airport_filter(raw_airports, city["city_name"])}
@@ -213,12 +267,26 @@ async def search(request: SearchRequest):
         if german_domestic_search
         else None
     )
+    france_domestic_search = (
+        origin_data.get("country_code") == "FR"
+        and destination_data.get("country_code") == "FR"
+    )
+    france_network_task = (
+        discover_french_rail_edges(
+            origin_nodes, destination_nodes, request.date, train_search_time,
+            request.travellers, request.minimum_train_transfer_minutes,
+            not request.respect_departure_time,
+        )
+        if france_domestic_search
+        else None
+    )
     (
         flight_result,
         d_ticket_gateway_result,
         international_rail_result,
         commercial_train_result,
         german_network_result,
+        french_rail_result,
     ) = await asyncio.gather(
         _measure_async(
             "flight_references",
@@ -261,6 +329,13 @@ async def search(request: SearchRequest):
             ),
             timings,
         ),
+        _measure_async(
+            "french_modular_rail",
+            france_network_task if france_network_task is not None else _empty_timed_rail_result(
+                "The modular French package applies only to journeys inside France."
+            ),
+            timings,
+        ),
     )
     flight_edges, flight_warnings = flight_result
     d_ticket_gateway_edges, d_ticket_gateway_warnings = d_ticket_gateway_result
@@ -272,6 +347,7 @@ async def search(request: SearchRequest):
         german_rail_warnings,
         german_rail_diagnostics,
     ) = german_network_result
+    french_rail_edges, french_rail_warnings, french_rail_diagnostics = french_rail_result
     scheduled_flight_edges, schedule_warnings = await _measure_async(
         "local_flight_schedules",
         discover_scheduled_flight_edges(origin_nodes, destination_nodes, request.date),
@@ -366,7 +442,7 @@ async def search(request: SearchRequest):
         rail_interchange_stations=german_rail_nodes,
         additional_edges=(
             flight_edges + d_ticket_gateway_edges + international_rail_edges
-            + commercial_train_edges + german_rail_edges
+            + commercial_train_edges + german_rail_edges + french_rail_edges
         ),
         policy=graph_policy,
         departure_at=journey_departure,
@@ -398,7 +474,7 @@ async def search(request: SearchRequest):
     warnings = (
         origin_warnings + destination_warnings + graph_warnings + flight_warnings
         + schedule_warnings + d_ticket_gateway_warnings + international_rail_warnings
-        + commercial_train_warnings + german_rail_warnings
+        + commercial_train_warnings + german_rail_warnings + french_rail_warnings
     )
     if warnings:
         response["warnings"] = warnings
@@ -433,12 +509,14 @@ async def search(request: SearchRequest):
                 "price_note": "Fares are local statistical estimates, not live offers.",
             },
             "german_modular_rail_search": german_rail_diagnostics,
+            "french_modular_rail_search": french_rail_diagnostics,
         }
     if request.include_diagnostics:
         response["rail_diagnostics"] = {
             "international": international_rail_diagnostics,
             "international_d_ticket_access_edge_count": len(d_ticket_gateway_edges),
             "german_modular_rail": german_rail_diagnostics,
+            "french_modular_rail": french_rail_diagnostics,
             "complete_route_count": len(route_plan.routes),
             "timing_milliseconds": timings,
             "note": "Diagnostics describe search stages and timing; they do not refresh city infrastructure or bypass the database cache.",

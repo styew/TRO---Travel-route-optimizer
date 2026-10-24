@@ -283,6 +283,7 @@ class RailStationMembershipRecord(Base):
     latitude: Mapped[float] = mapped_column(Float)
     longitude: Mapped[float] = mapped_column(Float)
     is_parent_station: Mapped[bool] = mapped_column(Boolean, default=True)
+    service_score: Mapped[int] = mapped_column(Integer, default=1)
     imported_at: Mapped[datetime] = mapped_column(DateTime, index=True)
 
 
