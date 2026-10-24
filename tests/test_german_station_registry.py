@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import tempfile
 import unittest
 import zipfile
@@ -20,15 +21,15 @@ def _write_gtfs_archive(path: Path, stops: list[dict[str, str]]) -> None:
     """Create the smallest valid GTFS stop archive required by the registry."""
     with zipfile.ZipFile(path, "w") as archive:
         with archive.open("stops.txt", "w") as raw_file:
-            writer = csv.DictWriter(
-                raw_file,
-                fieldnames=["stop_id", "stop_name", "stop_lat", "stop_lon", "location_type"],
-            )
-            raw_file.write("stop_id,stop_name,stop_lat,stop_lon,location_type\n".encode())
-            for stop in stops:
-                raw_file.write(",".join(
-                    stop.get(field, "") for field in writer.fieldnames
-                ).encode() + b"\n")
+            # GTFS is CSV: station names can contain commas, so use the CSV
+            # writer instead of joining text values manually.
+            with io.TextIOWrapper(raw_file, encoding="utf-8", newline="") as text_file:
+                writer = csv.DictWriter(
+                    text_file,
+                    fieldnames=["stop_id", "stop_name", "stop_lat", "stop_lon", "location_type"],
+                )
+                writer.writeheader()
+                writer.writerows(stops)
 
 
 class GermanStationRegistryTests(unittest.TestCase):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta
+from typing import Awaitable, Callable, TypeVar
 from zoneinfo import ZoneInfo
 
 from backend.models.graph import TravelEdge
@@ -25,6 +26,7 @@ from backend.services.regional_train_provider import (
 # bounds keep one slow timetable query from blocking the complete search.
 MAX_PARALLEL_TIMETABLE_QUERIES = 3
 TIMETABLE_STAGE_TIMEOUT_SECONDS = 12
+T = TypeVar("T")
 
 
 def _scheduled_datetime(edge: TravelEdge, field: str) -> datetime | None:
@@ -32,9 +34,15 @@ def _scheduled_datetime(edge: TravelEdge, field: str) -> datetime | None:
     value = edge.metadata.get(field)
     if not isinstance(value, str):
         return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
-async def _run_bounded_timetable_batch(nodes: list[TransportNode], operation) -> tuple[list[TravelEdge], int]:
+async def _run_bounded_timetable_batch(
+    items: list[T], operation: Callable[[T], Awaitable[list[TravelEdge]]]
+) -> tuple[list[TravelEdge], int, list[str]]:
     """Run a bounded group of OTP queries and retain only responses on time.
 
     A timeout cancels pending work instead of holding the traveller's complete
@@ -43,27 +51,178 @@ async def _run_bounded_timetable_batch(nodes: list[TransportNode], operation) ->
     """
     semaphore = asyncio.Semaphore(MAX_PARALLEL_TIMETABLE_QUERIES)
 
-    async def limited_operation(node: TransportNode) -> list[TravelEdge]:
-        """Apply the per-stage concurrency budget to one candidate station."""
+    async def limited_operation(item: T) -> list[TravelEdge]:
+        """Apply the per-stage concurrency budget to one candidate station or pair."""
         async with semaphore:
-            return await operation(node)
+            return await operation(item)
 
-    tasks = [asyncio.create_task(limited_operation(node)) for node in nodes]
+    tasks = [asyncio.create_task(limited_operation(item)) for item in items]
     done, pending = await asyncio.wait(tasks, timeout=TIMETABLE_STAGE_TIMEOUT_SECONDS)
     results: list[TravelEdge] = []
+    errors: list[str] = []
     try:
         for task in done:
-            results.extend(task.result())
+            try:
+                results.extend(task.result())
+            except (RegionalTrainRoutingError, LongDistanceTrainRoutingError) as error:
+                # One unsupported GTFS station must not discard routes found
+                # through the remaining physical interchange candidates.
+                errors.append(str(error))
     finally:
         for task in pending:
             task.cancel()
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
-    return results, len(pending)
+    return results, len(pending), errors
+
+
+async def discover_german_network_edges(
+    origin_nodes: list[TransportNode],
+    destination_nodes: list[TransportNode],
+    travel_date: str,
+    departure_time: str,
+    has_deutschlandticket: bool,
+    travellers: int,
+    minimum_train_transfer_minutes: int,
+    search_entire_day: bool,
+    gateway_departures: dict[str, datetime] | None = None,
+) -> tuple[list[TransportNode], list[TravelEdge], list[dict[str, str]], dict]:
+    """Build all domestic German rail edges through the modular network package.
+
+    This is the single entry point used by the API for a German domestic
+    journey. It keeps direct regional routes, direct paid long-distance routes,
+    and regional-to-long-distance handovers in one bounded workflow. The
+    former route-level provider functions remain low-level timetable adapters;
+    the API no longer orchestrates them as independent legacy searches.
+    """
+    origins = [node for node in origin_nodes if node.type == "train_station"]
+    destinations = [node for node in destination_nodes if node.type == "train_station"]
+    if not origins or not destinations:
+        return [], [], [], {
+            "enabled": True,
+            "reason": "A local origin and destination train station are required for German rail search.",
+        }
     try:
-        return datetime.fromisoformat(value)
+        default_departure = datetime.fromisoformat(
+            f"{travel_date}T{departure_time}:00"
+        ).replace(tzinfo=ZoneInfo("Europe/Berlin"))
     except ValueError:
-        return None
+        return [], [], [{
+            "infrastructure_type": "german_rail",
+            "message": "The selected departure time is invalid.",
+        }], {"enabled": True, "reason": "Invalid departure time."}
+
+    station_pairs = [(origin, destination) for origin in origins for destination in destinations]
+    regional_provider = OpenTripPlannerRegionalTrainProvider()
+    long_distance_provider = OpenTripPlannerLongDistanceTrainProvider()
+    warnings: list[dict[str, str]] = []
+    regional_direct_edges: list[TravelEdge] = []
+    long_distance_direct_edges: list[TravelEdge] = []
+    regional_direct_timeouts = 0
+    long_distance_direct_timeouts = 0
+    regional_direct_errors: list[str] = []
+    long_distance_direct_errors: list[str] = []
+
+    async def direct_regional(pair: tuple[TransportNode, TransportNode]) -> list[TravelEdge]:
+        """Resolve one direct D-Ticket station pair using the regional graph."""
+        origin, destination = pair
+        start = (gateway_departures or {}).get(origin.id, default_departure)
+        if search_entire_day:
+            start = start.replace(hour=0, minute=0)
+        return await regional_provider.find_d_ticket_edges(
+            origin, destination, travel_date, start,
+            minimum_train_transfer_minutes, search_entire_day,
+        )
+
+    async def direct_long_distance(pair: tuple[TransportNode, TransportNode]) -> list[TravelEdge]:
+        """Resolve one direct paid station pair using the long-distance graph."""
+        origin, destination = pair
+        start = (gateway_departures or {}).get(origin.id, default_departure)
+        if search_entire_day:
+            start = start.replace(hour=0, minute=0)
+        return await long_distance_provider.find_estimated_fare_edges(
+            origin, destination, travel_date, start,
+            minimum_train_transfer_minutes, travellers, search_entire_day,
+        )
+
+    async def collect_direct_regional() -> tuple[list[TravelEdge], int, list[str], list[dict[str, str]]]:
+        """Collect direct regional results without making paid rail wait for them."""
+        if not has_deutschlandticket:
+            return [], 0, [], []
+        try:
+            await regional_provider.ensure_available()
+            edges, timeouts, errors = await _run_bounded_timetable_batch(
+                station_pairs, direct_regional
+            )
+            return edges, timeouts, errors, []
+        except RegionalTrainProviderUnavailableError:
+            return [], 0, [], [{
+                "infrastructure_type": "german_regional_trains",
+                "message": "The regional timetable planner is unavailable; D-Ticket routes could not be checked.",
+            }]
+
+    async def collect_direct_long_distance() -> tuple[list[TravelEdge], int, list[str], list[dict[str, str]]]:
+        """Collect direct paid results without making regional rail wait for them."""
+        try:
+            await long_distance_provider.ensure_available()
+            edges, timeouts, errors = await _run_bounded_timetable_batch(
+                station_pairs, direct_long_distance
+            )
+            return edges, timeouts, errors, []
+        except LongDistanceTrainProviderUnavailableError:
+            return [], 0, [], [{
+                "infrastructure_type": "german_long_distance_trains",
+                "message": "The long-distance timetable planner is unavailable; paid train schedules could not be checked.",
+            }]
+
+    (
+        regional_direct_result,
+        long_distance_direct_result,
+        handover_result,
+    ) = await asyncio.gather(
+        collect_direct_regional(),
+        collect_direct_long_distance(),
+        discover_german_network_handover_edges(
+            origin_nodes, destination_nodes, travel_date, departure_time,
+            has_deutschlandticket, travellers, minimum_train_transfer_minutes,
+            search_entire_day,
+        ),
+    )
+    (
+        regional_direct_edges,
+        regional_direct_timeouts,
+        regional_direct_errors,
+        regional_warnings,
+    ) = regional_direct_result
+    (
+        long_distance_direct_edges,
+        long_distance_direct_timeouts,
+        long_distance_direct_errors,
+        long_distance_warnings,
+    ) = long_distance_direct_result
+    handover_nodes, handover_edges, handover_warnings, handover_diagnostics = handover_result
+    warnings.extend(regional_warnings + long_distance_warnings)
+    warnings.extend(handover_warnings)
+    if regional_direct_timeouts or long_distance_direct_timeouts:
+        warnings.append({
+            "infrastructure_type": "german_rail",
+            "message": "Some direct German rail timetable queries exceeded the time budget; available routes were kept.",
+        })
+    edges = list({edge.id: edge for edge in (
+        regional_direct_edges + long_distance_direct_edges + handover_edges
+    )}.values())
+    diagnostics = {
+        "enabled": True,
+        "direct_station_pairs": len(station_pairs),
+        "regional_direct_edge_count": len(regional_direct_edges),
+        "long_distance_direct_edge_count": len(long_distance_direct_edges),
+        "regional_direct_candidates_timed_out": regional_direct_timeouts,
+        "long_distance_direct_candidates_timed_out": long_distance_direct_timeouts,
+        "regional_direct_resolution_errors": len(regional_direct_errors),
+        "long_distance_direct_resolution_errors": len(long_distance_direct_errors),
+        "handover": handover_diagnostics,
+    }
+    return handover_nodes, edges, warnings, diagnostics
 
 
 async def discover_german_network_handover_edges(
@@ -135,9 +294,10 @@ async def discover_german_network_handover_edges(
         # Warm the feed identity before launching up to ten concurrent station
         # queries; otherwise every task would request the same metadata first.
         await regional_provider.ensure_available()
-        access_edges, regional_timeout_count = await _run_bounded_timetable_batch(
+        access_edges, regional_timeout_count, batch_errors = await _run_bounded_timetable_batch(
             handover_nodes, reach_handover
         )
+        regional_errors.extend(batch_errors)
     except RegionalTrainProviderUnavailableError:
         return handover_nodes, [], [{
             "infrastructure_type": "german_rail_handover",
@@ -184,7 +344,7 @@ async def discover_german_network_handover_edges(
 
     try:
         await long_distance_provider.ensure_available()
-        onward_edges, long_distance_timeout_count = await _run_bounded_timetable_batch(
+        onward_edges, long_distance_timeout_count, long_distance_errors = await _run_bounded_timetable_batch(
             reachable_handover_nodes, continue_from_handover
         )
     except LongDistanceTrainProviderUnavailableError:
@@ -200,6 +360,7 @@ async def discover_german_network_handover_edges(
         "regional_access_edge_count": len(access_edges),
         "long_distance_onward_edge_count": len(onward_edges),
         "regional_resolution_errors": len(regional_errors),
+        "long_distance_resolution_errors": len(long_distance_errors),
         "regional_candidates_timed_out": regional_timeout_count,
         "long_distance_candidates_timed_out": long_distance_timeout_count,
     }
