@@ -46,6 +46,7 @@ class OpenTripPlannerRegionalTrainProvider:
     def __init__(self, base_url: str | None = None) -> None:
         """Use an injected URL in tests or the environment configuration in production."""
         self._base_url = (base_url or OTP_GTFS_URL).rstrip("/")
+        self._feed_id: str | None = None
 
     async def _query(self, query: str, variables: dict | None = None) -> dict:
         """Execute one GraphQL request and convert network failures into provider errors."""
@@ -64,18 +65,28 @@ class OpenTripPlannerRegionalTrainProvider:
 
     async def _planner_stop_location(self, node: TransportNode) -> dict:
         """Resolve an OSM/Nominatim station node to OTP's exact FeedId:StopId format."""
+        await self.ensure_available()
+        # Canonical handover nodes are built from this exact GTFS archive.
+        # Prefer that audited ID over a new fuzzy name lookup.
+        station_id = node.metadata.get("gtfs_stop_ids", {}).get("de-regional")
+        station_id = station_id or find_gtfs_station_id(node.name, node.latitude, node.longitude)
+        if station_id is None:
+            raise RegionalTrainRoutingError(
+                f"No matching regional GTFS station was found for {node.name}."
+            )
+        return {"stopLocation": {"stopLocationId": f"{self._feed_id}:{station_id}"}}
+
+    async def ensure_available(self) -> None:
+        """Load the only GTFS feed once before a bounded batch of station queries."""
+        if self._feed_id is not None:
+            return
         feed_payload = await self._query("query { feeds { feedId } }")
         feeds = feed_payload.get("data", {}).get("feeds", [])
         if feed_payload.get("errors") or len(feeds) != 1:
             raise RegionalTrainProviderUnavailableError(
                 "The regional planner did not expose one usable GTFS feed."
             )
-        station_id = find_gtfs_station_id(node.name, node.latitude, node.longitude)
-        if station_id is None:
-            raise RegionalTrainRoutingError(
-                f"No matching regional GTFS station was found for {node.name}."
-            )
-        return {"stopLocation": {"stopLocationId": f"{feeds[0]['feedId']}:{station_id}"}}
+        self._feed_id = feeds[0]["feedId"]
 
     @staticmethod
     def _is_d_ticket_eligible_leg(leg: dict) -> bool:

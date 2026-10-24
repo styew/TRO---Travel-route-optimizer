@@ -6,9 +6,9 @@ from pydantic import BaseModel, Field
 class SearchRequest(BaseModel):
     """Defines the user input required to discover graph nodes for a journey."""
 
-    origin: str = Field(min_length=2, description="Origin city used to create initial graph nodes.", examples=["Erfurt"])
-    destination: str = Field(min_length=2, description="Destination city used to create final graph nodes.", examples=["München"])
-    date: str = Field(description="Planned travel date in YYYY-MM-DD format.", examples=["2026-10-10"])
+    origin: str = Field(min_length=2, max_length=120, description="Origin city used to create initial graph nodes.", examples=["Erfurt"])
+    destination: str = Field(min_length=2, max_length=120, description="Destination city used to create final graph nodes.", examples=["München"])
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$", description="Planned travel date in YYYY-MM-DD format.", examples=["2026-10-10"])
     departure_time: str = Field(default="08:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$", description="Local departure time in Europe/Berlin (HH:MM). It is used when `respect_departure_time` is true.", examples=["08:00"])
     respect_departure_time: bool = Field(default=True, description="When true, reject a timed connection that leaves before the traveller can reach it. When false, compare available options across the selected day without treating departure_time as a constraint.")
     has_deutschlandticket: bool = Field(default=False, description="Whether every traveller in this search already has a valid Deutschlandticket.")

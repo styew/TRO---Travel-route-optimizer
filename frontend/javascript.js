@@ -592,7 +592,8 @@ searchButton.addEventListener("click", async () => {
     searchButton.disabled = true;
     searchButton.textContent = "Building graph…";
     try {
-        const response = await fetch("http://localhost:8000/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ origin, destination, date, departure_time: departureTime, respect_departure_time: basicFilters.respectDepartureTime, has_deutschlandticket: basicFilters.hasDeutschlandticket, travellers: basicFilters.travellers, max_transport_categories: basicFilters.maxTransportCategories, minimum_train_transfer_minutes: basicFilters.minimumTrainTransferMinutes }) });
+        const apiBaseUrl = document.querySelector('meta[name="tro-api-base-url"]')?.content.replace(/\/$/, "") || "";
+        const response = await fetch(`${apiBaseUrl}/search`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ origin, destination, date, departure_time: departureTime, respect_departure_time: basicFilters.respectDepartureTime, has_deutschlandticket: basicFilters.hasDeutschlandticket, travellers: basicFilters.travellers, max_transport_categories: basicFilters.maxTransportCategories, minimum_train_transfer_minutes: basicFilters.minimumTrainTransferMinutes }) });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || "The graph could not be created.");
         latestGraph = data.graph;
