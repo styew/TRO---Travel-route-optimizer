@@ -7,6 +7,12 @@ services:
       DATABASE_URL: sqlite:////app/data/tro.db
       OTP_GTFS_URL: http://otp:8080/otp/gtfs/v1
       OTP_LONG_DISTANCE_URL: http://otp-long-distance:8080/otp/gtfs/v1
+      # Optional. The backend degrades gracefully when the Europe profile is
+      # stopped, so domestic searches do not require this larger graph.
+      OTP_EUROPE_URL: http://otp-europe:8080/otp/gtfs/v1
+      # Keep the station resolver aligned with the archive that produced the
+      # running D-Ticket OTP graph.
+      REGIONAL_GTFS_ARCHIVE_PATH: /app/otp-data/d-ticket/regional-d-ticket-gtfs.zip
     ports:
       - "8000:8000"
     volumes:
@@ -34,8 +40,7 @@ services:
     volumes:
       - ./otp-data/d-ticket:/var/opentripplanner
 
-  # This graph is intentionally separate from the D-Ticket graph. It holds
-  # paid German long-distance services and can later receive price estimates.
+  # Paid German long-distance rail graph.
   otp-long-distance:
     image: docker.io/opentripplanner/opentripplanner:latest
     container_name: tro-otp-long-distance
@@ -52,22 +57,25 @@ services:
     volumes:
       - ./otp-data/long-distance:/var/opentripplanner
 
-  # The optional Europe graph receives one filtered GTFS archive per country.
-  # It is kept outside the default stack until cross-border station transfers
-  # have been explicitly validated.
+  # Optional European graph: currently France and Switzerland.
   otp-europe:
     image: docker.io/opentripplanner/opentripplanner:latest
     profiles: ["europe"]
     container_name: tro-otp-europe
     command: ["--load", "--serve"]
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms2g -Xmx6g"
     ports:
       - "8082:8080"
     volumes:
       - ./otp-data/europe/rail:/var/opentripplanner
 
+  # Builds the European graph file. Docker Desktop needs at least 6 GB RAM.
   otp-europe-build:
     image: docker.io/opentripplanner/opentripplanner:latest
     profiles: ["europe-build"]
     command: ["--build", "--save"]
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms2g -Xmx6g"
     volumes:
       - ./otp-data/europe/rail:/var/opentripplanner

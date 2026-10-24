@@ -81,7 +81,7 @@ def build(source_path: Path, destination_path: Path) -> None:
 
 
 if __name__ == "__main__":
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     source = root / "otp-data" / "regional-rail-gtfs.zip"
     destination = root / "otp-data" / "d-ticket" / "regional-d-ticket-gtfs.zip"
     if not source.exists():

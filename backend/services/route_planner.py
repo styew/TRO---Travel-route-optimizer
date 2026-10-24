@@ -106,7 +106,12 @@ def _create_route_option(
 def find_lowest_price_routes(
     graph: RouteGraph, limit: int = 10, respect_departure_time: bool = True
 ) -> RoutePlan:
-    """Return cheap paths, optionally enforcing the selected journey start time."""
+    """Return cheap paths while always preserving chronology between segments.
+
+    ``respect_departure_time`` controls whether provider searches begin at the
+    traveller's chosen time. It must never permit an impossible connection
+    where the first train reaches a station after the next train has left.
+    """
     outgoing_edges: dict[str, list[TravelEdge]] = defaultdict(list)
     for edge in graph.edges:
         outgoing_edges[edge.origin_node_id].append(edge)
@@ -116,8 +121,6 @@ def find_lowest_price_routes(
 
     def has_time_conflict(previous: TravelEdge, next_edge: TravelEdge) -> bool:
         """Reject unreachable timed connections, including airport arrival margin."""
-        if not respect_departure_time:
-            return False
         previous_arrival = previous.metadata.get("planned_arrival")
         next_departure = next_edge.metadata.get("planned_departure")
         # A cached price without a departure timestamp is useful as a reference,
@@ -128,6 +131,12 @@ def find_lowest_price_routes(
             return False
         try:
             required_arrival = datetime.fromisoformat(previous_arrival)
+            # A D-Ticket leg and an international paid ticket meet at the
+            # same transport mode, but still need a deliberate station buffer.
+            # This is a fare-boundary transfer, not another transport category.
+            required_arrival += timedelta(
+                minutes=int(next_edge.metadata.get("required_preceding_transfer_minutes", 0))
+            )
             if previous.mode == "car" and next_edge.mode == "flight":
                 required_arrival += timedelta(
                     minutes=graph.policy.airport_arrival_buffer_minutes

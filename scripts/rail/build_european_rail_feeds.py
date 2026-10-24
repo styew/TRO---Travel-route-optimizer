@@ -11,7 +11,6 @@ from __future__ import annotations
 import csv
 import io
 import argparse
-import sqlite3
 import sys
 import tempfile
 import zipfile
@@ -62,13 +61,6 @@ def build_feed(source_path: Path, destination_path: Path) -> tuple[int, int]:
 
         with tempfile.TemporaryDirectory(prefix="tro-gtfs-") as temporary_root:
             temporary_directory = Path(temporary_root)
-            database = sqlite3.connect(temporary_directory / "selection.sqlite")
-            database.executescript("""
-                PRAGMA journal_mode=OFF;
-                PRAGMA synchronous=OFF;
-                CREATE TABLE trips (id TEXT PRIMARY KEY, service_id TEXT NOT NULL);
-                CREATE TABLE stops (id TEXT PRIMARY KEY);
-            """)
             trips_path = temporary_directory / "trips.txt"
             with csv_reader(source, "trips.txt") as source_file, trips_path.open("w", newline="", encoding="utf-8") as output:
                 reader = csv.DictReader(source_file)
@@ -76,14 +68,15 @@ def build_feed(source_path: Path, destination_path: Path) -> tuple[int, int]:
                 writer = csv.DictWriter(output, fieldnames=trip_fields, lineterminator="\n")
                 writer.writeheader()
                 trip_count = 0
+                selected_trip_ids: set[str] = set()
+                service_ids: set[str] = set()
                 for row in reader:
                     if row.get("route_id") in route_ids:
                         writer.writerow(row)
-                        database.execute("INSERT INTO trips VALUES (?, ?)", (row["trip_id"], row["service_id"]))
+                        selected_trip_ids.add(row["trip_id"])
+                        service_ids.add(row["service_id"])
                         trip_count += 1
-                        if trip_count % 10_000 == 0:
-                            database.commit()
-                database.commit()
+            selected_stop_ids: set[str] = set()
             stop_times_path = temporary_directory / "stop_times.txt"
             with csv_reader(source, "stop_times.txt") as source_file, stop_times_path.open("w", newline="", encoding="utf-8") as output:
                 reader = csv.DictReader(source_file)
@@ -91,20 +84,19 @@ def build_feed(source_path: Path, destination_path: Path) -> tuple[int, int]:
                 writer = csv.DictWriter(output, fieldnames=stop_time_fields, lineterminator="\n")
                 writer.writeheader()
                 for index, row in enumerate(reader, start=1):
-                    if database.execute("SELECT 1 FROM trips WHERE id = ?", (row.get("trip_id"),)).fetchone():
+                    if row.get("trip_id") in selected_trip_ids:
                         writer.writerow(row)
-                        database.execute("INSERT OR IGNORE INTO stops VALUES (?)", (row.get("stop_id"),))
-                    if index % 25_000 == 0:
-                        database.commit()
-                database.commit()
-            # A first streaming pass discovers parent stations; the second
-            # writes selected platforms and their parents without storing all
-            # Swiss stops in Python memory.
+                        selected_stop_ids.add(row.get("stop_id", ""))
+                    if index % 500_000 == 0:
+                        print(f"  processed {index:,} stop-time records", flush=True)
+            # Only selected identifiers are held in memory. The large
+            # stop_times table is still streamed directly from the archive.
+            parent_station_ids: set[str] = set()
             with csv_reader(source, "stops.txt") as source_file:
                 for row in csv.DictReader(source_file):
-                    if database.execute("SELECT 1 FROM stops WHERE id = ?", (row.get("stop_id"),)).fetchone() and row.get("parent_station"):
-                        database.execute("INSERT OR IGNORE INTO stops VALUES (?)", (row["parent_station"],))
-                database.commit()
+                    if row.get("stop_id") in selected_stop_ids and row.get("parent_station"):
+                        parent_station_ids.add(row["parent_station"])
+            selected_stop_ids.update(parent_station_ids)
             stops_path = temporary_directory / "stops.txt"
             with csv_reader(source, "stops.txt") as source_file, stops_path.open("w", newline="", encoding="utf-8") as output:
                 reader = csv.DictReader(source_file)
@@ -112,7 +104,7 @@ def build_feed(source_path: Path, destination_path: Path) -> tuple[int, int]:
                 writer = csv.DictWriter(output, fieldnames=stop_fields, lineterminator="\n")
                 writer.writeheader()
                 for row in reader:
-                    if database.execute("SELECT 1 FROM stops WHERE id = ?", (row.get("stop_id"),)).fetchone():
+                    if row.get("stop_id") in selected_stop_ids:
                         writer.writerow(row)
             calendar_paths: list[tuple[str, Path]] = []
             for calendar_name in ("calendar.txt", "calendar_dates.txt"):
@@ -125,10 +117,27 @@ def build_feed(source_path: Path, destination_path: Path) -> tuple[int, int]:
                     writer = csv.DictWriter(output, fieldnames=fields, lineterminator="\n")
                     writer.writeheader()
                     for row in reader:
-                        if database.execute("SELECT 1 FROM trips WHERE service_id = ? LIMIT 1", (row.get("service_id"),)).fetchone():
+                        if row.get("service_id") in service_ids:
                             writer.writerow(row)
                 calendar_paths.append((calendar_name, calendar_path))
-            database.close()
+
+            transfers_path: Path | None = None
+            if "transfers.txt" in source.namelist():
+                transfers_path = temporary_directory / "transfers.txt"
+                with (
+                    csv_reader(source, "transfers.txt") as source_file,
+                    transfers_path.open("w", newline="", encoding="utf-8") as output,
+                ):
+                    reader = csv.DictReader(source_file)
+                    fields = reader.fieldnames or []
+                    writer = csv.DictWriter(output, fieldnames=fields, lineterminator="\n")
+                    writer.writeheader()
+                    for row in reader:
+                        if (
+                            row.get("from_stop_id") in selected_stop_ids
+                            and row.get("to_stop_id") in selected_stop_ids
+                        ):
+                            writer.writerow(row)
 
             destination_path.parent.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(destination_path, "w", zipfile.ZIP_DEFLATED) as destination:
@@ -139,9 +148,11 @@ def build_feed(source_path: Path, destination_path: Path) -> tuple[int, int]:
                 destination.write(stops_path, "stops.txt")
                 for calendar_name, calendar_path in calendar_paths:
                     destination.write(calendar_path, calendar_name)
-                for name in ("feed_info.txt", "attributions.txt", "transfers.txt"):
+                for name in ("feed_info.txt", "attributions.txt"):
                     if name in source.namelist():
                         destination.writestr(name, source.read(name))
+                if transfers_path:
+                    destination.write(transfers_path, "transfers.txt")
     return len(rail_routes), trip_count
 
 
@@ -155,7 +166,7 @@ def main() -> None:
         help="Build only one staged country; omit to rebuild every source.",
     )
     arguments = parser.parse_args()
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     source_directory = root / "otp-data" / "europe" / "raw"
     destination_directory = root / "otp-data" / "europe" / "rail"
     sources = sorted(source_directory.glob("*.zip"))

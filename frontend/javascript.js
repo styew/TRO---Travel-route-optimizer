@@ -166,10 +166,13 @@ function showSearchResult(data, basicFilters) {
     const flightEdges = data.graph.edges.filter((edge) => edge.edge_type === "flight_connection");
     const carEdges = data.graph.edges.filter((edge) => edge.mode === "car");
     const regionalTrainEdges = data.graph.edges.filter((edge) => edge.edge_type === "train_connection" && edge.metadata.ticket_coverage === "Deutschlandticket");
+    const internationalTrainEdges = data.graph.edges.filter((edge) => edge.edge_type === "train_connection"
+        && edge.metadata.ticket_coverage === "estimated paid international rail fare");
     const nodeNames = new Map(data.graph.nodes.map((node) => [node.id, node.name]));
     const commercialTrainWarning = (data.warnings || []).find((warning) => warning.infrastructure_type === "commercial_trains");
     const flightWarning = (data.warnings || []).find((warning) => warning.infrastructure_type === "flights");
     const airportGatewayWarning = (data.warnings || []).find((warning) => warning.infrastructure_type === "airport_gateways");
+    const internationalRailWarning = (data.warnings || []).find((warning) => warning.infrastructure_type === "international_rail");
     const scheduledFlightEdges = flightEdges.filter((edge) => edge.metadata.schedule_source);
     const card = document.createElement("div");
     card.className = "result_card";
@@ -351,6 +354,12 @@ function showSearchResult(data, basicFilters) {
                 if (segment.mode === "flight" && Array.isArray(segment.metadata.flight_legs) && segment.metadata.flight_legs.length) {
                     item.appendChild(createFlightTimeline(segment));
                 }
+                // Every train segment includes its individual vehicles and waits,
+                // so a D-Ticket access leg and its paid onward train read as one
+                // understandable journey instead of two opaque graph edges.
+                if (segment.mode === "train" && Array.isArray(segment.metadata.legs) && segment.metadata.legs.length) {
+                    item.appendChild(createTrainTimeline(segment));
+                }
                 segments.appendChild(item);
                 const nextSegment = route.segments[index + 1];
                 if (segment.edge_type === "car_access_to_airport" && nextSegment?.mode === "flight") {
@@ -477,6 +486,37 @@ function showSearchResult(data, basicFilters) {
             trainDetails.appendChild(explanation);
         }
         card.insertBefore(trainDetails, graphButton);
+    }
+    if (internationalTrainEdges.length || internationalRailWarning) {
+        const internationalDetails = document.createElement("details");
+        internationalDetails.className = "connection_details";
+        const internationalSummary = document.createElement("summary");
+        internationalSummary.textContent = internationalTrainEdges.length
+            ? `${internationalTrainEdges.length} estimated international rail continuation(s) found`
+            : "No scheduled paid international rail continuation found";
+        internationalDetails.appendChild(internationalSummary);
+        if (internationalTrainEdges.length) {
+            const routes = document.createElement("div");
+            routes.className = "train_routes";
+            internationalTrainEdges.forEach((edge) => {
+                const routeCard = document.createElement("details");
+                routeCard.className = "train_route_card";
+                const routeSummary = document.createElement("summary");
+                const lines = edge.metadata.legs.map((leg) => leg.line).filter(Boolean).join(" → ");
+                routeSummary.textContent = `${formatJourneyTime(edge.metadata.planned_departure)} → ${formatJourneyTime(edge.metadata.planned_arrival)} · ${formatDuration(edge.estimated_duration_minutes)} · ${formatEuro(edge.estimated_price_eur)} estimated · ${lines || "International rail"}`;
+                const note = document.createElement("p");
+                note.className = "journey_detail_info";
+                note.textContent = "Paid continuation after the Deutschlandticket boundary. Fare is a TRO estimate, not a ticket offer.";
+                routeCard.append(routeSummary, note, createTrainTimeline(edge));
+                routes.appendChild(routeCard);
+            });
+            internationalDetails.appendChild(routes);
+        } else {
+            const explanation = document.createElement("p");
+            explanation.textContent = internationalRailWarning.message;
+            internationalDetails.appendChild(explanation);
+        }
+        card.insertBefore(internationalDetails, graphButton);
     }
     if (commercialTrainWarning) {
         const commercialNotice = document.createElement("p");
