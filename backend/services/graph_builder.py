@@ -124,11 +124,17 @@ def build_initial_route_graph(
     destination_nodes: list[TransportNode],
     gateway_stations: list[TransportNode],
     gateway_airports: list[TransportNode] | None = None,
+    international_gateway_stations: list[TransportNode] | None = None,
     additional_edges: list[TravelEdge] | None = None,
     policy: GraphPolicy | None = None,
     departure_at: datetime | None = None,
 ) -> RouteGraph:
-    """Build car edges and append provider connections between known graph nodes."""
+    """Build car edges and append provider connections between known graph nodes.
+
+    International rail gateways are purposefully added without car-access
+    edges.  They represent a D-Ticket-to-paid-rail fare boundary, not a new
+    local starting point that the traveller should drive to by default.
+    """
     policy = policy or GraphPolicy()
     origin_center = next(node for node in origin_nodes if node.type == "city_center")
     destination_center = next(
@@ -175,9 +181,10 @@ def build_initial_route_graph(
         for edge in edges[1:]
         if edge.destination_node_id in accepted_access_node_ids
     ]
+    international_gateway_stations = international_gateway_stations or []
     known_node_ids = {
         node.id
-        for node in origin_nodes + destination_nodes + accepted_gateways + accepted_gateway_airports
+        for node in origin_nodes + destination_nodes + accepted_gateways + accepted_gateway_airports + international_gateway_stations
     }
     provider_edges = [
         edge
@@ -185,7 +192,7 @@ def build_initial_route_graph(
         if edge.origin_node_id in known_node_ids and edge.destination_node_id in known_node_ids
     ]
     return RouteGraph(
-        nodes=origin_nodes + destination_nodes + accepted_gateways + accepted_gateway_airports,
+        nodes=origin_nodes + destination_nodes + accepted_gateways + accepted_gateway_airports + international_gateway_stations,
         edges=accepted_edges + provider_edges,
         origin_node_ids=[node.id for node in origin_nodes],
         destination_node_ids=[node.id for node in destination_nodes],

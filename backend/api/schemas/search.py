@@ -15,4 +15,5 @@ class SearchRequest(BaseModel):
     travellers: int = Field(default=1, ge=1, le=9, description="Number of travellers. This will affect paid transport prices later.")
     max_transport_categories: int = Field(default=4, ge=1, le=6, description="Maximum number of transport categories. Consecutive train legs count as one category.")
     minimum_train_transfer_minutes: int = Field(default=0, ge=0, le=60, description="Minimum scheduled waiting time required for every train-to-train transfer. Zero keeps all available connections.")
+    include_diagnostics: bool = Field(default=False, description="Return read-only counts and rejection reasons for each rail-search stage. This does not bypass the cache or refresh external city infrastructure.")
     debug: bool = Field(default=False, description="Bypass the database cache and return filter diagnostics.")

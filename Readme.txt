@@ -247,6 +247,17 @@ The database may be expanded in the future for:
 * Travel history
 * Machine learning datasets
 
+### Rail corridor strategy
+
+TRO does not keep a worldwide rail graph active for every search. A small
+metadata catalog selects only the relevant timetable corridor from the origin
+and destination countries. The first planned international handover is
+Germany to France: regional German travel can be covered by an existing
+Deutschlandticket up to a configured gateway station, while the onward
+international rail segment receives a separately labelled price estimate.
+This keeps the runtime practical while allowing additional country corridors,
+buses and ferries to be added later.
+
 ### Local database inspection and analysis
 
 The development database is the local SQLite file `data/tro.db`, mounted into
@@ -257,15 +268,15 @@ that would be unsafe without user authentication.
 Run the read-only terminal inspector while Docker is running:
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\inspect_database.py
-.\.venv\Scripts\python.exe .\scripts\inspect_database.py --table scheduled_flights --limit 20
-.\.venv\Scripts\python.exe .\scripts\inspect_database.py --table flight_price_observations
+.\.venv\Scripts\python.exe .\scripts\database\inspect_database.py
+.\.venv\Scripts\python.exe .\scripts\database\inspect_database.py --table scheduled_flights --limit 20
+.\.venv\Scripts\python.exe .\scripts\database\inspect_database.py --table flight_price_observations
 ```
 
 For reproducible pandas reports, run:
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\analyze_flights.py
+.\.venv\Scripts\python.exe .\scripts\flights\analyze_flights.py
 ```
 
 This writes `scheduled_flights_summary.csv` and
@@ -288,10 +299,10 @@ for later estimate calibration, because one ticket can cover several trains.
 Create the table and one clearly labelled non-real example row with:
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\prepare_rail_price_observations.py
+.\.venv\Scripts\python.exe .\scripts\rail\prepare_rail_price_observations.py
 ```
 
-Use `scripts/rail_price_observations_template.csv` as a safe spreadsheet
+Use `scripts/rail/rail_price_observations_template.csv` as a safe spreadsheet
 template. In DB Browser for SQLite, open `data/tro.db`, choose the
 `rail_price_observations` table and remove the row where `is_example` is true
 before analysing real observations. Keep a consistent search profile (for
@@ -301,7 +312,7 @@ so that the data can be compared later.
 `price_eur` stores one observed price or the midpoint of a reported range.
 When a source only provides a range, `price_min_eur` and `price_max_eur`
 preserve its lower and upper bounds instead of pretending that the midpoint is
-an exact fare. The included `import_user_rail_price_observations.py` script
+an exact fare. The included `scripts/rail/import_user_rail_price_observations.py` script
 records the initial ICE calibration supplied during project development. It is
 idempotent and does not affect route results.
 
@@ -326,7 +337,7 @@ train types.
 European calibration observations can additionally use `market` pairs such
 as `DE-FR` and an optional seller/operator context such as `db` or `oebb`.
 This avoids incorrectly averaging two materially different offers for the
-same route. `scripts/import_user_european_rail_observations.py` contains the
+same route. `scripts/rail/import_user_european_rail_observations.py` contains the
 initial owner-provided Omio research for München to Paris, Wien, Zürich,
 Amsterdam, Milano, Roma and Zagreb. These route-level records retain stated
 transfer stations and always represent an observed full itinerary, not the
@@ -344,8 +355,8 @@ distances.
 Run these maintenance scripts after importing new curated observations:
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\enrich_rail_price_observation_metadata.py
-.\.venv\Scripts\python.exe .\scripts\rebuild_rail_price_profiles.py
+.\.venv\Scripts\python.exe .\scripts\rail\enrich_rail_price_observation_metadata.py
+.\.venv\Scripts\python.exe .\scripts\rail\rebuild_rail_price_profiles.py
 ```
 
 The derived model uses the median of comparable observations, then includes a
@@ -366,7 +377,7 @@ Download the current long-distance feed and build its local OpenTripPlanner
 graph before enabling schedule-based paid-train discovery:
 
 ```powershell
-.\scripts\update_long_distance_gtfs.ps1
+.\scripts\rail\update_long_distance_gtfs.ps1
 docker compose --profile long-distance-build run --rm otp-long-distance-build
 docker compose up -d --build
 ```
@@ -407,8 +418,8 @@ The selected primary sources are:
 Download France or Switzerland directly:
 
 ```powershell
-.\scripts\update_european_gtfs.ps1 -Country France
-.\scripts\update_european_gtfs.ps1 -Country Switzerland
+.\scripts\rail\update_european_gtfs.ps1 -Country France
+.\scripts\rail\update_european_gtfs.ps1 -Country Switzerland
 ```
 
 After manually downloading a valid **GTFS ZIP** from an official source, stage
@@ -416,13 +427,13 @@ the other countries explicitly. This lets the project keep the source and its
 licence decision auditable:
 
 ```powershell
-.\scripts\update_european_gtfs.ps1 -Country Austria -SourcePath "C:\Downloads\oebb-gtfs.zip"
+.\scripts\rail\update_european_gtfs.ps1 -Country Austria -SourcePath "C:\Downloads\oebb-gtfs.zip"
 ```
 
 Then make the rail-only OTP inputs and build the optional Europe graph:
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\build_european_rail_feeds.py
+.\.venv\Scripts\python.exe .\scripts\rail\build_european_rail_feeds.py
 docker compose --profile europe-build run --rm otp-europe-build
 docker compose --profile europe up -d otp-europe
 ```
@@ -431,7 +442,7 @@ For a large national source such as Switzerland, process it independently and
 wait for the completion message before rebuilding the OTP graph:
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\build_european_rail_feeds.py --country switzerland
+.\.venv\Scripts\python.exe .\scripts\rail\build_european_rail_feeds.py --country switzerland
 ```
 
 Do not stage Italy until its official NeTEx archive has passed a dedicated,
@@ -518,14 +529,14 @@ offer.
 Use only an official export or data that the source permits TRO to reuse. Do not
 scrape airport, airline, or affiliate webpages. The local importer expects one
 actual service date per CSV row; a documented template is available at
-`scripts/flight_schedule_template.csv`.
+`scripts/flights/flight_schedule_template.csv`.
 
 ```powershell
 # Local Python installation
-.\.venv\Scripts\python.exe .\scripts\import_flight_schedules.py .\my-nuremberg-export.csv
+.\.venv\Scripts\python.exe .\scripts\flights\import_flight_schedules.py .\my-nuremberg-export.csv
 
 # Or, after rebuilding the Docker image, using a CSV stored under ./data
-docker compose exec backend python scripts/import_flight_schedules.py /app/data/my-nuremberg-export.csv
+docker compose exec backend python scripts/flights/import_flight_schedules.py /app/data/my-nuremberg-export.csv
 ```
 
 The importer creates `scheduled_flights` records and updates an existing row
@@ -588,8 +599,8 @@ After approval, the provider will return timed, priced train edges with booking 
 Download the current GTFS feed, build the OTP graph, then start both services:
 
 ```powershell
-.\scripts\update_regional_gtfs.ps1
-..\.venv\Scripts\python.exe .\scripts\build_d_ticket_gtfs.py
+.\scripts\rail\update_regional_gtfs.ps1
+.\.venv\Scripts\python.exe .\scripts\rail\build_d_ticket_gtfs.py
 docker compose --profile build run --rm otp-build
 docker compose up --build
 ```
@@ -618,6 +629,9 @@ The availability and quality of external APIs will also influence which transpor
 ---
 
 ## Project Development
+
+For the current technical layout, data boundaries and maintenance-script
+groups, see [docs/architecture.md](docs/architecture.md).
 
 This project will be developed iteratively as a solo project.
 

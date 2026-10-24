@@ -81,6 +81,9 @@ async def geocode(city: str):
     return {
         "name": result["display_name"],
         "city_name": city_name,
+        # ISO country codes select a small rail corridor instead of loading a
+        # worldwide timetable graph for every request.
+        "country_code": (address.get("country_code") or "").upper() or None,
         "latitude": float(result["lat"]),
         "longitude": float(result["lon"]),
         "source_id": f"nominatim:{result['osm_type']}:{result['osm_id']}",

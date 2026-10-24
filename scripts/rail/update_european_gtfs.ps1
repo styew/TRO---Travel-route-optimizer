@@ -1,11 +1,11 @@
 <#
 Stages official European rail timetable files for the future shared OTP graph.
 
-France can be downloaded directly from the national transport-data portal.
-Austria, Switzerland and Italy deliberately require a local source file: their
-official portals either require acceptance of terms, publish a dynamic download
-resource, or use NeTEx rather than a ready GTFS archive. This avoids silently
-using an unofficial mirror or accepting licence terms on the user's behalf.
+France and Switzerland can be downloaded from their official public catalogues.
+Austria and Italy deliberately require a local source file: the Austrian portal
+requires acceptance of terms, while Italy publishes NeTEx rather than a ready
+GTFS archive. This avoids silently using an unofficial mirror or accepting
+licence terms on the user's behalf.
 #>
 
 param(
@@ -14,7 +14,7 @@ param(
     [string]$SourcePath
 )
 
-$projectRoot = Split-Path -Parent $PSScriptRoot
+$projectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $rawDirectory = Join-Path $projectRoot "otp-data\europe\raw"
 $destinations = @{
     France = "france-sncf-gtfs.zip"

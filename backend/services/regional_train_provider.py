@@ -18,6 +18,9 @@ OTP_PROVIDER_NAME = "OpenTripPlanner with GTFS Regional Rail Germany"
 # do not require a DB-style RB/RE/S-Bahn prefix: regional operators also use
 # valid names such as STB, ALX, MEX, or agilis.
 _LONG_DISTANCE_LINE_PATTERN = re.compile(r"^(ICE|IC|EC|FLX|TGV|RJ|NJ)", re.IGNORECASE)
+_NON_D_TICKET_OPERATOR_MARKERS = (
+    "flixtrain", "db fernverkehr", "leo express", "öbb", "oebb", "westbahn", "regiojet",
+)
 
 
 class RegionalTrainProviderUnavailableError(Exception):
@@ -79,7 +82,10 @@ class OpenTripPlannerRegionalTrainProvider:
         """Trust the filtered regional feed while rejecting clear long-distance leftovers."""
         line = (leg.get("route", {}).get("shortName") or "").strip()
         operator = (leg.get("route", {}).get("agency", {}).get("name") or "").lower()
-        if "flixtrain" in operator or "db fernverkehr" in operator:
+        # The filtered source can still contain through services such as LEO
+        # Express or Nightjet. They are not covered by Deutschlandticket and
+        # must not create a fictitious zero-euro access leg.
+        if any(marker in operator for marker in _NON_D_TICKET_OPERATOR_MARKERS):
             return False
         return not bool(_LONG_DISTANCE_LINE_PATTERN.match(line))
 
@@ -209,6 +215,7 @@ async def discover_regional_train_edges(origin_nodes: list[TransportNode], desti
         default_departure = datetime.fromisoformat(f"{travel_date}T{departure_time}:00").replace(tzinfo=ZoneInfo("Europe/Berlin"))
     except ValueError:
         return [], [{"infrastructure_type": "regional_trains", "message": "The selected departure time is invalid."}]
+    routing_errors: list[RegionalTrainRoutingError] = []
     for origin_station in origin_stations:
         for destination_station in destination_stations:
             try:
@@ -224,12 +231,22 @@ async def discover_regional_train_edges(origin_nodes: list[TransportNode], desti
             except RegionalTrainProviderUnavailableError:
                 return [], [{"infrastructure_type": "regional_trains", "message": "The regional-train planner is not available yet; D-Ticket routes could not be added."}]
             except RegionalTrainRoutingError as error:
-                return [], [{"infrastructure_type": "regional_trains", "message": str(error)}]
+                # A dynamically discovered international gateway can be a
+                # valid long-distance station but not be reachable by
+                # D-Ticket on this date. Try the remaining candidates rather
+                # than letting one unusable station hide every other path.
+                routing_errors.append(error)
+                continue
     unique_edges = {edge.id: edge for edge in edges}
     edges = list(unique_edges.values())
     if not edges and minimum_transfer_minutes:
         return [], [{
             "infrastructure_type": "regional_trains",
             "message": f"No regional route met the selected minimum transfer time of {minimum_transfer_minutes} minutes.",
+        }]
+    if not edges and routing_errors:
+        return [], [{
+            "infrastructure_type": "regional_trains",
+            "message": "No Deutschlandticket itinerary reached the timetable-discovered international interchange stations on the selected date.",
         }]
     return edges, []

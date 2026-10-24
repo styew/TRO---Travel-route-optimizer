@@ -13,7 +13,7 @@ from pathlib import Path
 
 # Executing a script makes its own folder the import root. Add the project root
 # so the importer works both locally and from /app inside the Docker image.
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
