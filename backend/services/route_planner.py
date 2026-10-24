@@ -1,9 +1,9 @@
-"""Rank complete graph paths by lowest estimated price."""
+"""Rank complete graph paths by price, total journey time or their balance."""
 
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from backend.models.graph import RouteGraph, RouteOption, RoutePlan, TravelEdge
+from backend.models.graph import RouteGraph, RouteOption, RoutePlan, RouteRanking, TravelEdge
 
 
 def _count_transport_categories(segments: list[TravelEdge]) -> int:
@@ -66,6 +66,18 @@ def _create_route_option(
     internal_transfers = sum(
         int(edge.metadata.get("transfer_count", 0)) for edge in segments
     )
+    # Two train edges still require a real train change, even though they
+    # count as one transport category in the user's modal-change limit.
+    rail_joins = [
+        (previous, following) for previous, following in zip(segments, segments[1:])
+        if previous.mode == following.mode == "train"
+    ]
+    join_wait_minutes = 0
+    for previous, following in rail_joins:
+        previous_arrival = _parse_schedule(previous.metadata.get("planned_arrival"))
+        following_departure = _parse_schedule(following.metadata.get("planned_departure"))
+        if previous_arrival and following_departure:
+            join_wait_minutes += max(0, round((following_departure - previous_arrival).total_seconds() / 60))
     departure = segments[0].metadata.get("planned_departure")
     arrival = segments[-1].metadata.get("planned_arrival")
     segment_duration_minutes = sum(
@@ -96,22 +108,30 @@ def _create_route_option(
         ),
         planned_departure=departure,
         planned_arrival=arrival,
-        total_transfer_wait_minutes=sum(int(edge.metadata.get("total_transfer_wait_minutes", 0)) for edge in segments),
-        transfer_count=internal_transfers + max(0, category_count - 1),
+        total_transfer_wait_minutes=join_wait_minutes + sum(int(edge.metadata.get("total_transfer_wait_minutes", 0)) for edge in segments),
+        transfer_count=internal_transfers + len(rail_joins) + max(0, category_count - 1),
         transport_category_count=category_count,
         transport_category_changes=max(0, category_count - 1),
     )
 
 
 def find_lowest_price_routes(
-    graph: RouteGraph, limit: int = 10, respect_departure_time: bool = True
+    graph: RouteGraph, limit: int = 10, respect_departure_time: bool = True,
+    ranking_criterion: RouteRanking = "lowest_price",
 ) -> RoutePlan:
-    """Return cheap paths while always preserving chronology between segments.
+    """Rank every valid complete path by price, elapsed time or their balance.
 
+    The historical function name remains for existing callers. Balanced mode
+    gives equal weight to price and elapsed-time ranges across all candidates:
+    0.5 * (price - min_price) / price_range +
+    0.5 * (duration - min_duration) / duration_range.
+    A constant dimension contributes zero. Ranking precedes the result limit.
     ``respect_departure_time`` controls whether provider searches begin at the
     traveller's chosen time. It must never permit an impossible connection
     where the first train reaches a station after the next train has left.
     """
+    if ranking_criterion not in {"lowest_price", "fastest", "balanced"}:
+        raise ValueError("Unknown route ranking criterion.")
     outgoing_edges: dict[str, list[TravelEdge]] = defaultdict(list)
     for edge in graph.edges:
         outgoing_edges[edge.origin_node_id].append(edge)
@@ -128,6 +148,8 @@ def find_lowest_price_routes(
         if previous.mode == "car" and next_edge.mode == "flight" and not next_departure:
             return True
         if not previous_arrival or not next_departure:
+            if previous.mode == next_edge.mode == "train":
+                return True
             return False
         try:
             required_arrival = datetime.fromisoformat(previous_arrival)
@@ -142,8 +164,8 @@ def find_lowest_price_routes(
                     minutes=graph.policy.airport_arrival_buffer_minutes
                 )
             return datetime.fromisoformat(next_departure) < required_arrival
-        except ValueError:
-            return False
+        except (ValueError, TypeError):
+            return previous.mode == next_edge.mode == "train"
 
     def explore(node_id: str, segments: list[TravelEdge], visited_nodes: set[str]) -> None:
         """Expand paths without cycles, excess category changes, or runaway edge hops."""
@@ -169,21 +191,33 @@ def find_lowest_price_routes(
     for origin_id in graph.origin_node_ids:
         explore(origin_id, [], {origin_id})
 
-    sorted_paths = sorted(
-        completed_paths,
-        key=lambda path: (
-            sum(edge.estimated_price_eur for edge in path),
-            sum(edge.estimated_duration_minutes for edge in path),
-            len(path),
-            tuple(edge.id for edge in path),
-        ),
-    )[:limit]
+    candidates = [
+        _create_route_option(0, path, graph.policy.airport_arrival_buffer_minutes)
+        for path in completed_paths
+    ]
+    min_price = min((route.total_estimated_price_eur for route in candidates), default=0)
+    min_duration = min((route.total_estimated_duration_minutes for route in candidates), default=0)
+    price_range = max((route.total_estimated_price_eur for route in candidates), default=0) - min_price
+    duration_range = max((route.total_estimated_duration_minutes for route in candidates), default=0) - min_duration
+
+    def ranking_key(route: RouteOption) -> tuple:
+        """Apply the selected priority with deterministic, schedule-aware ties."""
+        price, duration = route.total_estimated_price_eur, route.total_estimated_duration_minutes
+        if ranking_criterion == "fastest":
+            priority = (duration, price)
+        elif ranking_criterion == "balanced":
+            score = 0.5 * ((price - min_price) / price_range if price_range else 0)
+            score += 0.5 * ((duration - min_duration) / duration_range if duration_range else 0)
+            priority = (score, duration, price)
+        else:
+            priority = (price, duration)
+        return (*priority, len(route.segments), tuple(edge.id for edge in route.segments))
+
+    ranked = sorted(candidates, key=ranking_key)[:limit]
+    for rank, route in enumerate(ranked, start=1):
+        route.rank = rank
     return RoutePlan(
+        ranking_criterion=ranking_criterion,
         max_transport_categories=graph.policy.max_transport_categories,
-        routes=[
-            _create_route_option(
-                rank, path, graph.policy.airport_arrival_buffer_minutes
-            )
-            for rank, path in enumerate(sorted_paths, start=1)
-        ],
+        routes=ranked,
     )

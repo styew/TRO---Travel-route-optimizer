@@ -179,20 +179,77 @@ async def discover_gateway_train_stations(
     )
 
 
-def select_city_train_station(stations: list[dict[str, Any]], city_name: str) -> list[dict[str, Any]]:
-    """Return the city's Hbf, otherwise its exact-name station, otherwise none."""
-    selection = explain_train_station_filter(stations, city_name)
+def select_city_train_station(
+    stations: list[dict[str, Any]], city_name: str, country_code: str | None = None,
+) -> list[dict[str, Any]]:
+    """Select station terminals using the country rule appropriate to the city."""
+    selection = explain_train_station_filter(stations, city_name, country_code)
     return selection["selected"]
 
 
 def explain_train_station_filter(
-    stations: list[dict[str, Any]], city_name: str
+    stations: list[dict[str, Any]], city_name: str, country_code: str | None = None,
 ) -> dict[str, Any]:
     """Expose the station-filter decision for development and manual verification."""
     normalized_city = _normalize_text(city_name)
     if not normalized_city:
         return {"rule_applied": "no_city_name", "selected": [], "candidates": []}
     city_words = _station_city_words(city_name)
+    # French cities often have several valid long-distance terminals (for
+    # example Paris Gare du Nord, Paris Est and Paris Montparnasse). Unlike
+    # Germany there is no universal Hbf suffix, so keep a small, transparent
+    # set of city-named "Gare" terminals instead of forcing a false single
+    # main station. Timetable routing later decides which terminal is usable.
+    if country_code == "FR":
+        french_candidates = []
+        for station in stations:
+            normalized_name = _normalize_text(station["name"])
+            name_words = normalized_name.split()
+            city_match = bool(city_words) and all(word in name_words for word in city_words)
+            is_gare = "gare" in name_words
+            french_candidates.append({
+                "id": station["id"],
+                "name": station["name"],
+                "distance_km": station["distance_km"],
+                # Labels such as "Paris Est" are main-line terminals too,
+                # even though the word "Gare" is omitted. Prefer explicit
+                # Gare labels while retaining city-named alternatives.
+                "match_type": "city_gare_terminal" if city_match else "not_eligible",
+                "is_explicit_gare": is_gare,
+            })
+        # OpenStreetMap can expose the same building as several nodes (main
+        # entrance, platforms, RER area). Keep one representative per printed
+        # terminal name before applying the four-terminal cap. This prevents
+        # duplicate Gare du Nord nodes from hiding Gare de Lyon or Austerlitz.
+        unique_candidates: dict[str, dict[str, Any]] = {}
+        for candidate in french_candidates:
+            if candidate["match_type"] != "city_gare_terminal":
+                continue
+            key = _normalize_text(candidate["name"])
+            current = unique_candidates.get(key)
+            if current is None or (
+                candidate["is_explicit_gare"] and not current["is_explicit_gare"]
+            ) or candidate["distance_km"] < current["distance_km"]:
+                unique_candidates[key] = candidate
+        explicit_gare_candidates = [
+            candidate for candidate in unique_candidates.values()
+            if candidate["is_explicit_gare"]
+        ]
+        eligible_candidates = explicit_gare_candidates or list(unique_candidates.values())
+        selected_ids = {
+            candidate["id"] for candidate in sorted(
+                eligible_candidates,
+                key=lambda candidate: (candidate["distance_km"], candidate["name"]),
+            )[:4]
+        }
+        selected = [station for station in stations if station["id"] in selected_ids]
+        for candidate in french_candidates:
+            candidate["selected"] = candidate["id"] in selected_ids
+        return {
+            "rule_applied": "france_city_gare_terminals" if selected else "no_city_station_found",
+            "selected": selected,
+            "candidates": french_candidates,
+        }
     hbf_stations = []
     exact_name_stations = []
     candidates = []

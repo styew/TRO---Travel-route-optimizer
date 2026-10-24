@@ -7,6 +7,9 @@ services:
       DATABASE_URL: sqlite:////app/data/tro.db
       OTP_GTFS_URL: http://otp:8080/otp/gtfs/v1
       OTP_LONG_DISTANCE_URL: http://otp-long-distance:8080/otp/gtfs/v1
+      OTP_FRANCE_URL: http://otp-france:8080/otp/gtfs/v1
+      # Built offline from DE–FR services only; no Europe OTP dependency.
+      DE_FR_TIMETABLE_PATH: /app/data/rail/de-fr.sqlite
       # Optional. The backend degrades gracefully when the Europe profile is
       # stopped, so domestic searches do not require this larger graph.
       OTP_EUROPE_URL: http://otp-europe:8080/otp/gtfs/v1
@@ -28,8 +31,9 @@ services:
     image: docker.io/opentripplanner/opentripplanner:latest
     container_name: tro-otp
     command: ["--load", "--serve"]
-    ports:
-      - "8080:8080"
+    # Internal only: the backend is the sole component allowed to query OTP.
+    expose:
+      - "8080"
     volumes:
       - ./otp-data/d-ticket:/var/opentripplanner
 
@@ -45,8 +49,8 @@ services:
     image: docker.io/opentripplanner/opentripplanner:latest
     container_name: tro-otp-long-distance
     command: ["--load", "--serve"]
-    ports:
-      - "8081:8080"
+    expose:
+      - "8080"
     volumes:
       - ./otp-data/long-distance:/var/opentripplanner
 
@@ -57,6 +61,25 @@ services:
     volumes:
       - ./otp-data/long-distance:/var/opentripplanner
 
+  # France stays independent from the shared optional Europe graph. It is
+  # started only for French domestic searches and future DE↔FR corridors.
+  otp-france:
+    image: docker.io/opentripplanner/opentripplanner:latest
+    profiles: ["france"]
+    container_name: tro-otp-france
+    command: ["--load", "--serve"]
+    expose:
+      - "8080"
+    volumes:
+      - ./otp-data/france:/var/opentripplanner
+
+  otp-france-build:
+    image: docker.io/opentripplanner/opentripplanner:latest
+    profiles: ["france-build"]
+    command: ["--build", "--save"]
+    volumes:
+      - ./otp-data/france:/var/opentripplanner
+
   # Optional European graph: currently France and Switzerland.
   otp-europe:
     image: docker.io/opentripplanner/opentripplanner:latest
@@ -65,8 +88,8 @@ services:
     command: ["--load", "--serve"]
     environment:
       JAVA_TOOL_OPTIONS: "-Xms2g -Xmx6g"
-    ports:
-      - "8082:8080"
+    expose:
+      - "8080"
     volumes:
       - ./otp-data/europe/rail:/var/opentripplanner
 

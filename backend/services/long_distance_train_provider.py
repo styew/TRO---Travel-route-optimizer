@@ -74,6 +74,7 @@ class OpenTripPlannerLongDistanceTrainProvider:
     def __init__(self, base_url: str | None = None) -> None:
         """Use the configured long-distance planner or an injected test endpoint."""
         self._base_url = (base_url or OTP_LONG_DISTANCE_URL).rstrip("/")
+        self._feed_id: str | None = None
 
     async def _query(self, query: str, variables: dict | None = None) -> dict:
         """Run one GraphQL query and turn connection failures into a domain error."""
@@ -89,20 +90,28 @@ class OpenTripPlannerLongDistanceTrainProvider:
 
     async def _planner_stop_location(self, node: TransportNode) -> dict:
         """Map an infrastructure node to the selected graph's GTFS parent station."""
-        feed_payload = await self._query("query { feeds { feedId } }")
-        feeds = feed_payload.get("data", {}).get("feeds", [])
-        if feed_payload.get("errors") or len(feeds) != 1:
-            raise LongDistanceTrainProviderUnavailableError(
-                "The long-distance planner did not expose one usable GTFS feed."
-            )
-        station_id = find_gtfs_station_id(
+        await self.ensure_available()
+        station_id = node.metadata.get("gtfs_stop_ids", {}).get("de-long-distance")
+        station_id = station_id or find_gtfs_station_id(
             node.name, node.latitude, node.longitude, LONG_DISTANCE_GTFS_ARCHIVE_PATH
         )
         if station_id is None:
             raise LongDistanceTrainRoutingError(
                 f"No matching long-distance GTFS station was found for {node.name}."
             )
-        return {"stopLocation": {"stopLocationId": f"{feeds[0]['feedId']}:{station_id}"}}
+        return {"stopLocation": {"stopLocationId": f"{self._feed_id}:{station_id}"}}
+
+    async def ensure_available(self) -> None:
+        """Load the configured GTFS feed once before a bounded group of queries."""
+        if self._feed_id is not None:
+            return
+        feed_payload = await self._query("query { feeds { feedId } }")
+        feeds = feed_payload.get("data", {}).get("feeds", [])
+        if feed_payload.get("errors") or len(feeds) != 1:
+            raise LongDistanceTrainProviderUnavailableError(
+                "The long-distance planner did not expose one usable GTFS feed."
+            )
+        self._feed_id = feeds[0]["feedId"]
 
     async def find_estimated_fare_edges(
         self, origin: TransportNode, destination: TransportNode, travel_date: str,
@@ -164,20 +173,34 @@ class OpenTripPlannerLongDistanceTrainProvider:
                 booking_days_ahead=booking_days, passengers=passengers,
                 provider_context=_provider_context(legs),
             )
-            # A timetable alone must never become a fake EUR 0 offer.  More
-            # profiles can be added as the user calibrates additional corridors.
+            # Missing calibration must not hide a timetable-valid ICE/IC
+            # journey.  The fallback is deliberately labelled as provisional;
+            # it is a ranking value, never a live fare or booking promise.
             if estimate is None:
-                continue
+                provisional_price = round(
+                    max(9.99, min(249.0, distance_km * 0.18)) * passengers, 2
+                )
+                estimate_data = {
+                    "price_min_eur": round(provisional_price * 0.75, 2),
+                    "price_typical_eur": provisional_price,
+                    "price_max_eur": round(provisional_price * 1.35, 2),
+                    "price_confidence": "very_low",
+                    "price_source": "provisional distance fallback; no calibrated profile",
+                }
+                estimated_price = provisional_price
+            else:
+                estimate_data = estimate.as_dict()
+                estimated_price = estimate.typical_eur
             route_start = re.sub(r"[^0-9]", "", str(itinerary.get("start") or departure_at.isoformat()))
             edges.append(TravelEdge(
                 id=f"train:long-distance:{origin.id}:{destination.id}:{travel_date}:{route_start}:{index}",
                 origin_node_id=origin.id, destination_node_id=destination.id,
                 mode="train", edge_type="train_connection", estimated_distance_km=distance_km,
                 estimated_duration_minutes=max(1, round(float(itinerary.get("duration") or 0) / 60)),
-                estimated_price_eur=estimate.typical_eur, is_estimate=True, provider=PROVIDER_NAME,
+                estimated_price_eur=estimated_price, is_estimate=True, provider=PROVIDER_NAME,
                 metadata={
                     "ticket_coverage": "estimated paid long-distance rail fare",
-                    **estimate.as_dict(),
+                    **estimate_data,
                     "planned_departure": itinerary.get("start"), "planned_arrival": itinerary.get("end"),
                     "transfer_count": itinerary.get("numberOfTransfers", 0),
                     "minimum_transfer_minutes_required": minimum_transfer_minutes,

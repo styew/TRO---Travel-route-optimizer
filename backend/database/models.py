@@ -243,3 +243,83 @@ class RailPriceProfileRecord(Base):
     is_prototype: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     notes: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class RailStationRecord(Base):
+    """Represents one physical station independently from a timetable provider.
+
+    A station is deliberately not tied to an OSM node or a GTFS stop identifier.
+    Different national timetable feeds frequently use different identifiers for
+    the same building.  This table is the stable identity that lets TRO join
+    those networks through explicit, inspectable station memberships.
+    """
+
+    __tablename__ = "rail_stations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    canonical_id: Mapped[str] = mapped_column(String(300), unique=True, index=True)
+    home_region: Mapped[str] = mapped_column(String(30), index=True)
+    name: Mapped[str] = mapped_column(String(500))
+    normalized_name: Mapped[str] = mapped_column(String(500), index=True)
+    latitude: Mapped[float] = mapped_column(Float)
+    longitude: Mapped[float] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class RailStationMembershipRecord(Base):
+    """Maps one canonical station to the identifier used by one rail network."""
+
+    __tablename__ = "rail_station_memberships"
+    __table_args__ = (
+        UniqueConstraint("network_key", "source_stop_id", name="uq_rail_station_membership"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    station_id: Mapped[int] = mapped_column(ForeignKey("rail_stations.id", ondelete="CASCADE"), index=True)
+    network_key: Mapped[str] = mapped_column(String(100), index=True)
+    source_stop_id: Mapped[str] = mapped_column(String(255))
+    source_name: Mapped[str] = mapped_column(String(500))
+    latitude: Mapped[float] = mapped_column(Float)
+    longitude: Mapped[float] = mapped_column(Float)
+    is_parent_station: Mapped[bool] = mapped_column(Boolean, default=True)
+    service_score: Mapped[int] = mapped_column(Integer, default=1)
+    imported_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class RailStationInterchangeRecord(Base):
+    """Stores an approved transfer between two networks at one physical station.
+
+    The index is intentionally directional.  Future countries may need a
+    different minimum change time in each direction or a walk to another
+    station, without changing the identity of either station.
+    """
+
+    __tablename__ = "rail_station_interchanges"
+    __table_args__ = (
+        UniqueConstraint(
+            "station_id", "from_network_key", "to_network_key",
+            name="uq_rail_station_interchange",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    station_id: Mapped[int] = mapped_column(ForeignKey("rail_stations.id", ondelete="CASCADE"), index=True)
+    from_network_key: Mapped[str] = mapped_column(String(100), index=True)
+    to_network_key: Mapped[str] = mapped_column(String(100), index=True)
+    minimum_transfer_minutes: Mapped[int] = mapped_column(Integer, default=15)
+    transfer_kind: Mapped[str] = mapped_column(String(50), default="same_station")
+    imported_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class RailNetworkImportRecord(Base):
+    """Audits the GTFS archive used to build a modular rail-network index."""
+
+    __tablename__ = "rail_network_imports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    network_key: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    archive_path: Mapped[str] = mapped_column(String(1000))
+    archive_fingerprint: Mapped[str] = mapped_column(String(128), index=True)
+    parent_station_count: Mapped[int] = mapped_column(Integer)
+    imported_at: Mapped[datetime] = mapped_column(DateTime, index=True)

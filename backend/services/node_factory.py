@@ -39,6 +39,7 @@ def create_city_transport_nodes(
                 source_id=station["id"],
                 metadata={
                     "distance_from_city_center_km": station["distance_km"],
+                    "gtfs_stop_ids": station.get("gtfs_stop_ids", {}),
                     "graph_role": f"{graph_side}_local_terminal",
                 },
             )

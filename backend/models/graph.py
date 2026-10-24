@@ -6,11 +6,15 @@ from pydantic import BaseModel, Field
 
 from backend.models.node import TransportNode
 
+RouteRanking = Literal["lowest_price", "fastest", "balanced"]
+
 
 class GraphPolicy(BaseModel):
     """Defines safety limits while allowing several legs of the same transport type."""
 
-    max_gateway_stations: int = Field(default=3, ge=1, le=5)
+    # Keep a wider initial candidate set for small cities while later route
+    # stages still discard stations without a timetable-valid continuation.
+    max_gateway_stations: int = Field(default=10, ge=1, le=10)
     max_transport_categories: int = Field(default=4, ge=1, le=6)
     max_edge_hops: int = Field(default=12, ge=1, le=30)
     max_car_access_minutes: int = Field(default=90, ge=15, le=180)
@@ -74,8 +78,8 @@ class RouteOption(BaseModel):
 
 
 class RoutePlan(BaseModel):
-    """Cheapest complete route options currently available in a route graph."""
+    """Complete routes ranked by the requested price/time preference."""
 
-    ranking_criterion: Literal["lowest_price"] = "lowest_price"
+    ranking_criterion: RouteRanking = "lowest_price"
     max_transport_categories: int
     routes: list[RouteOption]
